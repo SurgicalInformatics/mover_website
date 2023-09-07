@@ -1,0 +1,44 @@
+---
+title: "Demographics (patient information)"
+---
+
+```{r, echo = FALSE}
+library(knitr)
+
+knit_hooks$set(inline = function(x) {
+      prettyNum(x, big.mark=",")
+    })
+```
+
+The cleaning script loaded here is at: [GitHub: mover, 01_demographics.R](https://github.com/SurgicalInformatics/mover/blob/main/01_demographics.R)
+
+```{r}
+library(tidyverse)
+library(finalfit)
+source("../mover/01_demographics.R")
+```
+
+The patient information dataset includes `r n_distinct(demographics_orig$MRN)` patients who had `r n_distinct(demographics_orig$LOG_ID)` surgeries. The original file has `r nrow(demographics_orig)` rows, removing duplicate patient ID (`mrn`) and procedure ID (`log_id`) rows, leaves us with `r nrow(demographics)` patient-procedure observations.
+
+
+Variable list: [MOVER: Patient Info Table](https://mover.ics.uci.edu/patient-info-table.html)
+
+
+```{r}
+demographics %>% 
+  mutate(across(all_of(c("sex", "primary_anes_type_nm", "patient_class_group")), fct_infreq)) %>% 
+  summary_factorlist(explanatory = c("age", "sex", "los", "primary_anes_type_nm", "asa_rating", "patient_class_group")) %>% 
+  kable()
+```
+
+# Procedures
+
+
+```{r}
+demographics %>% 
+  count(primary_procedure_nm, sort = TRUE) %>% 
+  # Changing from ALL CAPS to lowercase
+  mutate(primary_procedure_nm = str_to_sentence(primary_procedure_nm)) %>% 
+  kable()
+```
+

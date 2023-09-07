@@ -1,0 +1,12 @@
+---
+title: ""
+---
+
+Summary tables and working data dictionaries for the MOVER EPIC EHR datasets.
+
+Data dictionary provided with the datasets: [MOVER Documentation](https://mover.ics.uci.edu/documentation.html)
+
+Our cleaning scripts are loaded from: [Our MOVER GitHub repository](https://github.com/SurgicalInformatics/mover)
+
+Current pages:  
+[Demographics](demographics.qmd)
