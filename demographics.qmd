@@ -4,7 +4,6 @@ title: "Demographics (patient information)"
 
 ```{r, echo = FALSE}
 library(knitr)
-
 knit_hooks$set(inline = function(x) {
       prettyNum(x, big.mark=",")
     })
@@ -16,6 +15,7 @@ The cleaning script loaded here is at: [GitHub: mover, 01_demographics.R](https:
 library(tidyverse)
 library(finalfit)
 source("../mover/01_demographics.R")
+source("functions.R")
 ```
 
 The patient information dataset includes `r n_distinct(demographics_orig$MRN)` patients who had `r n_distinct(demographics_orig$LOG_ID)` surgeries. The original file has `r nrow(demographics_orig)` rows, removing duplicate patient ID (`mrn`) and procedure ID (`log_id`) rows, leaves us with `r nrow(demographics)` patient-procedure observations.
@@ -39,6 +39,6 @@ demographics %>%
   count(primary_procedure_nm, sort = TRUE) %>% 
   # Changing from ALL CAPS to lowercase
   mutate(primary_procedure_nm = str_to_sentence(primary_procedure_nm)) %>% 
-  kable()
+  mydt(pagelength = 50)
 ```
 
