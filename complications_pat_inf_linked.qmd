@@ -1,0 +1,110 @@
+---
+title: "Complications by procedure"
+format: html
+editor: visual
+---
+
+## Examine the complications linked to procedures
+
+```{r warning=F, output=F}
+library(tidyverse)
+library(finalfit)
+library(DT)
+theme_set(theme_bw())
+
+source("01_read_clean.R")
+
+```
+
+Link the cleaned complications to the patient information data, joining by patient and mrn:
+
+```{r}
+linked_data = left_join(complications_cleaned, patient_information, by = join_by(log_id, mrn)) %>%
+  distinct()
+```
+
+Almost all patients are distinct in this set:
+
+```{r}
+print(paste("Total rows", linked_data %>% nrow()))
+print(paste("Number of distinct patients = ", linked_data %>% distinct(log_id) %>% nrow()))
+```
+
+## Count the procedures among all patients (100 most common):
+
+```{r}
+
+linked_data %>% 
+  
+  count(primary_procedure_nm, any_complication, sort = T) %>% 
+  pivot_wider(names_from = c(any_complication), values_from = n) %>% 
+  mutate(percent = round(100*Yes/(Yes+No), 2 )) %>% 
+  #head(n=100) #%>% 
+  #knitr::kable()
+  DT::datatable(
+        rownames = FALSE,
+        extensions = c('Buttons'),
+        filter = "top",
+        options = list(
+            pageLength = 15,
+            autoWidth = TRUE,
+            scrollX = TRUE,
+           searchHighlight = TRUE))
+  
+
+
+```
+
+```{r}
+## The patient_class_group and primary_procedure are missing together
+linked_data %>% 
+  mutate(class_na = is.na(patient_class_group),
+         proc_na = is.na(primary_procedure_nm)) %>% 
+  select(class_na, proc_na) %>% 
+  table()
+```
+
+## Count with respect to complications and in/outpatient status
+
+Drop NAs in In/Outpatient status (this is equivalent to dropping complications rows that do not link to the patient information rows) to simplify the table.
+
+```{r}
+# drop NAs in patient_class group to simplify table
+
+linked_data %>% 
+  drop_na(patient_class_group) %>% 
+  mutate(patient_class_group = case_when(
+    patient_class_group == "Outpatient" ~ "Out",
+    patient_class_group == "Inpatient" ~ "In"
+  )) %>% 
+  count(primary_procedure_nm, patient_class_group, any_complication, sort = T) %>% 
+  pivot_wider(names_from = c( patient_class_group, any_complication), values_from = n) %>% 
+  select(primary_procedure_nm, Out_No, Out_Yes, In_No, In_Yes) %>% 
+  mutate(percent_Out = round(100*Out_Yes/(Out_Yes+Out_No), 2 )) %>% 
+  mutate(percent_In = round(100*In_Yes/(In_Yes+In_No), 2 )) %>% 
+  #head(n=100) #%>% 
+  #knitr::kable()
+  DT::datatable(
+        rownames = FALSE,
+        extensions = c('Buttons'),
+        filter = "top",
+        options = list(
+            pageLength = 15,
+            autoWidth = TRUE,
+            scrollX = TRUE,
+           searchHighlight = TRUE))
+  
+
+
+```
+
+## Count the procedures across those patients experiencing any_complication (100 most common):
+
+```{r}
+linked_data %>% 
+  filter(any_complication == "Yes") %>% 
+  count(primary_procedure_nm, sort = T)  %>% 
+  head(n=100) %>% 
+  knitr::kable()
+  
+```

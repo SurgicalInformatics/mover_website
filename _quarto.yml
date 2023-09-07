@@ -8,6 +8,7 @@ website:
       - href: index.qmd
         text: Home
       - demographics.qmd
+      - complications_pat_inf_linked.qmd
 
 format:
   html:
