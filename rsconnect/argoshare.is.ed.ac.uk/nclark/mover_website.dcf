@@ -1,0 +1,13 @@
+name: mover_website
+title: mover_website
+username: nclark
+account: nclark
+server: argoshare.is.ed.ac.uk
+hostUrl: https://argoshare.is.ed.ac.uk/__api__
+appId: 638
+bundleId: 3241
+url: https://argoshare.is.ed.ac.uk/content/4011ce3c-b70c-46b6-a5a9-9473479d3de2/
+when: 1694160542.4574
+lastSyncTime: 1694160542.45741
+asMultiple: FALSE
+asStatic: TRUE
