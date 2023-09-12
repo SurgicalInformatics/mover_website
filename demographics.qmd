@@ -2,20 +2,17 @@
 title: "Demographics (patient information)"
 ---
 
-```{r, echo = FALSE}
-library(knitr)
-knit_hooks$set(inline = function(x) {
-      prettyNum(x, big.mark=",")
-    })
-```
-
-The cleaning script loaded here is at: [GitHub: mover, 01_demographics.R](https://github.com/SurgicalInformatics/mover/blob/main/01_demographics.R)
+The cleaning script used here is at: [GitHub: mover, 01_patient_information.R](https://github.com/SurgicalInformatics/mover/blob/main/01_patient_information.R)
 
 ```{r}
 library(tidyverse)
 library(finalfit)
-source("../mover/01_demographics.R")
 source("functions.R")
+theme_set(theme_bw())
+
+demographics = read_csv("/home/common/mover_data/surginf_cleaned/patient_information_cleaned.csv")
+demographics_orig = read_csv(paste0(Sys.getenv("epic_emr"), "patient_information.csv"), col_select = c("MRN", "LOG_ID"))
+
 ```
 
 The patient information dataset includes `r n_distinct(demographics_orig$MRN)` patients who had `r n_distinct(demographics_orig$LOG_ID)` surgeries. The original file has `r nrow(demographics_orig)` rows, removing duplicate patient ID (`mrn`) and procedure ID (`log_id`) rows, leaves us with `r nrow(demographics)` patient-procedure observations.

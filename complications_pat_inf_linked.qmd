@@ -13,9 +13,11 @@ library(tidyverse)
 library(finalfit)
 library(DT)
 theme_set(theme_bw())
-
-source("../mover/01_read_clean.R")
 source("functions.R")
+
+patient_information   = read_csv("/home/common/mover_data/surginf_cleaned/patient_information_cleaned.csv")
+complications_cleaned = read_csv("/home/common/mover_data/surginf_cleaned/complications_cleaned.csv")
+
 ```
 
 Link the cleaned complications to the patient information data, joining by patient and mrn:

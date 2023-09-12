@@ -1,0 +1,58 @@
+---
+title: "Patient procedure events"
+format: html
+editor: visual
+---
+
+The cleaning script used here is at: [GitHub: mover, 04_patient_procedure_events.R](https://github.com/SurgicalInformatics/mover/blob/main/04_patient_procedure_events.R)
+
+```{r}
+library(tidyverse)
+library(finalfit)
+library(ggridges)
+source("functions.R")
+theme_set(theme_bw())
+
+procedure_events = read_csv("/home/common/mover_data/surginf_cleaned/patient_procedure_events_cleaned.csv",
+                            guess_max = Inf)
+
+```
+
+
+
+
+# Procedure events by prevalence
+
+```{r}
+procedure_events %>% 
+  count(event_display_name, sort = TRUE) %>% 
+  mydt(100)
+```
+
+
+
+# Time of day for 10 most frequent events
+
+```{r}
+top10_events = procedure_events %>% 
+  count(event_display_name, sort = TRUE) %>% 
+  slice(1:10) %>% 
+  pull(event_display_name)
+
+procedure_events %>% 
+  filter(event_display_name %in% top10_events) %>% 
+  mutate(event_display_name = fct_relevel(event_display_name, rev(top10_events))) %>% 
+  mutate(hour = hour(event_time)) %>% 
+  ggplot(aes(hour, event_display_name)) +
+  geom_density_ridges() +
+  scale_x_continuous(limits = c(0, 24), breaks = seq(0, 24, 2))
+```
+
+# Note text
+
+```{r}
+procedure_events %>% 
+  count(note_text, sort = TRUE) %>% 
+  mydt()
+```
+
