@@ -13,5 +13,7 @@ Current pages:
 
 [Patient procedure events](procedure_events.qmd)
 
+[Complications](complications.qmd)
+
 [Complications by procedure](complications_pat_inf_linked.qmd)
 

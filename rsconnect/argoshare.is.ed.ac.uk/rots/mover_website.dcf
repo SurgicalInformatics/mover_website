@@ -5,9 +5,9 @@ account: rots
 server: argoshare.is.ed.ac.uk
 hostUrl: https://argoshare.is.ed.ac.uk/__api__
 appId: 635
-bundleId: 3250
+bundleId: 3251
 url: https://argoshare.is.ed.ac.uk/mover_dd/
-when: 1694505471.70335
-lastSyncTime: 1694505471.70336
+when: 1694539967.17784
+lastSyncTime: 1694539967.17785
 asMultiple: FALSE
 asStatic: TRUE

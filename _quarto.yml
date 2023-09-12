@@ -9,6 +9,7 @@ website:
         text: Home
       - demographics.qmd
       - procedure_events.qmd
+      - complications.qmd
       - complications_pat_inf_linked.qmd
       
 

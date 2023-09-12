@@ -7,8 +7,6 @@ editor: visual
 ## Examine the complications linked to procedures
 
 ```{r warning=F, output=F}
-
-
 library(tidyverse)
 library(finalfit)
 library(DT)
@@ -20,7 +18,7 @@ complications_cleaned = read_csv("/home/common/mover_data/surginf_cleaned/compli
 
 ```
 
-Link the cleaned complications to the patient information data, joining by patient and mrn:
+Link the cleaned complications to the patient information data, joining by procedure (log_id) and patient ID (mrn):
 
 ```{r}
 linked_data = left_join(complications_cleaned, patient_information, by = join_by(log_id, mrn)) %>%

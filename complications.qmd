@@ -1,0 +1,66 @@
+---
+title: "Complications"
+format: html
+editor: source
+---
+
+The cleaning scripts used to create these files are at:
+[GitHub: mover, 01_patient_information.R](https://github.com/SurgicalInformatics/mover/blob/main/01_patient_information.R)  
+[GitHub: mover, 02_complications.R](https://github.com/SurgicalInformatics/mover/blob/main/02_complications.R)
+
+```{r warning=F, output=F}
+library(tidyverse)
+library(finalfit)
+library(DT)
+theme_set(theme_bw())
+source("functions.R")
+
+patient_information   = read_csv("/home/common/mover_data/surginf_cleaned/patient_information_cleaned.csv")
+complications_cleaned = read_csv("/home/common/mover_data/surginf_cleaned/complications_cleaned.csv")
+
+```
+
+
+# Issue 1
+
+When we joined these datasets we noticed over 3,000 unmatched patient of procedure IDs.
+
+```{r}
+outcomes_missing = anti_join(patient_information, complications_cleaned, by = join_by(log_id, mrn))
+pat_info_missing = anti_join(complications_cleaned, patient_information, by = join_by(log_id, mrn))
+```
+
+
+We have `r nrow(outcomes_missing)` patient information records without a matching complications record. And we have `r nrow(pat_info_missing)` complication records without a matching patient information record. These numbers are suspiciously close, I wonder if something's gone awry in the ID generation process?
+
+# Issue 2
+
+The complication rates are lower than expected. Table 3 in [the MOVER dataset description paper](https://www.medrxiv.org/content/10.1101/2023.03.03.23286777v2) has 1,023 (1.6%) deaths, but we're only seeing 76 (0.1%):
+
+```{r}
+complications_cleaned %>% 
+  summary_factorlist(explanatory = c("death", "respiratory_comp", "any_complication"))
+```
+
+Respiratory complications are also a bit lower than they should be: 598 (here) vs 735 (paper).
+
+Where could these missing outcomes be? 
+
+# Complciations table
+
+Note that the counts here are for unique combinations of complications.
+
+```{r}
+complications_cleaned %>% 
+  count(comp_abbr, sort = TRUE) %>% 
+  mydt(20)
+```
+
+There's a further column called 'complications full' with more information, the missing information could be in there? The original name of this variable was `smrtdta_elem_value`.
+
+```{r}
+complications_cleaned %>% 
+  count(comp_full, sort = TRUE) %>% 
+  mydt(50)
+```
+
