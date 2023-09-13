@@ -1,0 +1,227 @@
+---
+title: "Baseline model preparation"
+format: html
+editor: visual
+---
+
+## Prepare baseline modeling data (including imputation)
+
+```{r warning=F, output=F}
+library(tidyverse)
+library(finalfit)
+library(mice)
+theme_set(theme_bw())
+
+#source("01_read_clean.R")
+#source("../repos/mover_website/functions.R")
+source("functions.R")
+```
+
+Read in the required data sets:
+
+```{r echo=T, warning=F, output=F}
+# Patient informtion
+patient_information   = read_csv("/home/common/mover_data/surginf_cleaned/patient_information_cleaned.csv")
+
+#Complications
+complications_cleaned = read_csv("/home/common/mover_data/surginf_cleaned/complications_cleaned.csv")
+
+# LDA
+patient_lda = read_csv("/home/common/mover_data/srv/disk00/MOVER/EPIC/EMR/patient_lda.csv") %>% 
+  distinct %>% 
+  janitor::clean_names()
+```
+
+# Introduction
+
+Here we prepare the data for developing a logistic regression model that serves as a baseline for predictions respiratory complications. The model will depend on basic data from the EPIC patient information data set. As a comparison we also include information from the patient LDA data set which details lines, drains, and airway devices used on the patient.
+
+Here we perform the following data preparation steps:
+
+-   Extract and wrangle LDA data
+
+-   Define sets of explanatory and dependent variables
+
+-   link complications, patient info and LDA data
+
+-   Impute with MICE
+
+## Wrangle LDA data
+
+The EPIC LDA data set include information on lines, drains, and airway devices used on the patient, the time of placement, the time of removal, and location of placement. We extract the line_group_name variable:
+
+**Line_Group_Name:**
+
+Line_Group_Name groups the devices and events into 12 categories and provides a category name for the line, drain, airway device, or other event.
+
+And wrangle into a separate count for each category in each patient (each device/event can occur multiple times and locations, e.g. wrist, head etc.).
+
+Make a line group variable from patient LDA:
+
+```{r}
+
+lda_grouped = patient_lda %>% 
+  select(log_id, mrn, line_group_name) %>% 
+  count(log_id, mrn, line_group_name) %>% 
+  pivot_wider(names_from = line_group_name, values_from = n) %>% 
+  dplyr::rename("missing" = "NA") %>% 
+  select(-missing) %>% 
+  replace(is.na(.), 0)
+
+```
+
+Taking a glimpse:
+
+```{r}
+lda_grouped %>% glimpse()
+```
+
+## Link complications, patient info and LDA
+
+Import and link complications with patient info. Not that we are using an inner join, which retains only (log_id, mrn) that are present in all the liked data sets.
+
+```{r}
+
+linked_data = inner_join(complications_cleaned, 
+                         patient_information, 
+                         by = join_by(log_id, mrn)) %>%
+  inner_join(lda_grouped, by = join_by(log_id, mrn)) %>%
+  distinct(log_id, mrn, .keep_all=T) %>% 
+  
+  mutate(primary_anes_type_nm = case_when(
+    primary_anes_type_nm == "Moderate Sedation - by non-anesthesia staff only" ~ "moderate_sedation",
+    primary_anes_type_nm == "Monitored Anesthesia Care (MAC)" ~ "monitored_anesthesia_care",
+    primary_anes_type_nm == "Choice Per Patient on Day of Surgery" ~ "patient_choice_on_day",
+    TRUE ~ primary_anes_type_nm
+  )) %>% 
+  janitor::clean_names()
+
+```
+
+## Define dependent and independent variables
+
+In order to compare the the VITALS model of respiratory complications we select ***respiratory_comp*** as the dependent variable.
+
+The basic set of independent variables are selected from the patient information data set as follows:
+
+-   ***birth_data***: age of the patient
+
+-   ***height_cm***: height in centimetres
+
+-   ***weight***
+
+-   ***sex***
+
+-   ***primary_anes_type_nm***: primary type of anesthesia a patient received.
+
+-   ***asa_rating_c***: ASA Physical Status Class 1-6 for each patient
+
+-   ***patient_class_group***: Inpatient or Outpatient
+
+-   ***icu_admin_flag***: whether or not a patient was admitted to the ICU during their visit. (if the complication is the reason for ICU admission then this is not an appropriate variable)
+
+-   A count of each category of lines/devices per patient.
+
+```{r echo=T, warning=F}
+dependent = "respiratory_comp"
+independent = c(
+  
+  "age",
+  "height_cm",
+  "weight",
+  "sex",
+  "primary_anes_type_nm",
+  "asa_rating_c",
+  "patient_class_group",
+  "icu_admin_flag",
+  
+  "piv_line",
+  "wound",
+  "urinary_drainage",           
+  "art_line",
+  "airway",
+  "cvc_line",
+  
+  "drain",
+  "wound_therapy",
+  "picc_line",
+  
+  "pressure_ulcer_injury",
+  "line_type",
+  "nasogastric_orogastric_tube",
+  
+  "extravasation",
+  "epidural_line",
+  "intraosseous_line"
+)
+  
+impute_data = linked_data %>% 
+  select(dependent, all_of(independent)) %>% 
+  drop_na(dependent)
+```
+
+Split the data into train and test
+
+```{r}
+set.seed(2001)
+impute_data$id = 1:nrow(impute_data)
+impute_data_train <- impute_data %>% dplyr::sample_frac(0.80)
+impute_data_test  <- dplyr::anti_join(impute_data, impute_data_train, by = 'id')
+
+#impute_data_train %>% write_rds("./results/train_set.rds")
+#impute_data_test %>% write_rds("./results/test_set.rds")
+
+impute_data_train %>% write_rds("/home/common/mover_data/results/baseline_imputation/train_set.rds")
+impute_data_test %>% write_rds("/home/common/mover_data/results/baseline_imputation/test_set.rds")
+```
+
+## Imputation
+
+Impute training data:
+
+```{r echo=T, warning=F, output=F}
+
+df = impute_data_train%>% 
+  select(dependent, all_of(independent ))
+
+df %>% 
+  select(dependent, all_of(independent )) %>% 
+  missing_predictorMatrix(
+    drop_from_imputed = c(dependent)#,
+#    drop_from_imputer = c(dependent)
+  ) -> predM_train
+
+# Run for 10 imputed sets with 10 iterations
+# Run in parallel over 5 cores. 
+sets_train =  
+  mice(df, m = 10, predictorMatrix = predM_train, maxit = 10, 
+           n.core = 2)#,  n.imp.core = 5)
+
+#sets_train %>% write_rds("./results/mice_train.rds")
+sets_train %>% write_rds("/home/common/mover_data/results/baseline_imputation/mice_train.rds")
+
+```
+
+Impute the test data:
+
+```{r echo=T, warning=F, output=F}
+
+df = impute_data_test%>% 
+  select(dependent, all_of(independent ))
+
+df %>% 
+  select(dependent, all_of(independent )) %>% 
+  missing_predictorMatrix(
+    drop_from_imputed = c(dependent),
+    drop_from_imputer = c(dependent)
+  ) -> predM_test
+
+# Run for 10 imputed sets with 10 iterations
+# Run in parallel over 5 cores. 
+sets_test =  
+  mice(df, m = 10, predictorMatrix = predM_test, maxit = 10, 
+           n.core = 2)#,  n.imp.core = 5)
+
+#sets_test %>% write_rds("./results/mice_test.rds")
+sets_test %>% write_rds("/home/common/mover_data/results/baseline_imputation/mice_test.rds")
+```

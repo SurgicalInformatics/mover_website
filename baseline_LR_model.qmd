@@ -1,0 +1,511 @@
+---
+title: "Logistic regression baseline model of respiritory complications"
+format: html
+editor: visual
+---
+
+```{r output=F, warning=F}
+library(tidyverse)
+library(finalfit)
+library(purrr)
+library(glmnet)
+library(recipes)
+library(yardstick)
+theme_set(theme_bw())
+
+#source("01_read_clean.R")
+#source("../repos/mover_website/functions.R")
+source("functions.R")
+```
+
+# Introduction
+
+We use the prepared and imputed data from Baseline model preparation and develop a logistic regression model of respiratory complications based on basic patient information. As a comparison we also develop a model including information from the patient LDA data set which details lines, drains, and airway devices used on the patient.
+
+Note that inpatients and outpatients are included and their status included as an explanatory variable. We also take no account of the surgical procedure at this stage.
+
+We will perform the following analysis steps:
+
+-   Import imputed data
+
+-   Define sets of explanatory variables
+
+-   Fit Lasso regularized models and examine the cross validated regularization paths.
+
+-   Examine the variables that are used at the optimal regularization strength
+
+-   Evaluate performance with ROC and PR curves.
+
+## Import imputed data
+
+These imputed date were generated in the Baseline model preparation script.
+
+```{r}
+#sets_train = read_rds("./results/mice_train.rds")
+#sets_test = read_rds("./results/mice_test.rds")
+#
+#data_train = read_rds("./results/train_set.rds")
+#data_test = read_rds("./results/test_set.rds")
+
+
+sets_train = read_rds("/home/common/mover_data/results/baseline_imputation/mice_train.rds")
+sets_test = read_rds("/home/common/mover_data/results/baseline_imputation/mice_test.rds")
+
+data_train = read_rds("/home/common/mover_data/results/baseline_imputation/train_set.rds")
+data_test = read_rds("/home/common/mover_data/results/baseline_imputation/test_set.rds")
+```
+
+## Exaplanatory variables
+
+We define two stes of explanatory variables. One based only on patient information and another that also includes LDA information:
+
+```{r}
+dependent = "respiratory_comp"
+independent_all = c(
+  
+  "icu_admin_flag",
+  "age",
+  "height_cm",
+  "weight",
+  "sex",
+  
+  "primary_anes_type_nm",
+  "asa_rating_c",
+  
+  "patient_class_group",
+  
+  "piv_line",
+  "wound",
+  "urinary_drainage",           
+  "art_line",
+  "airway",
+  "cvc_line",
+  
+  "drain",
+  "wound_therapy",
+  "picc_line",
+  
+  "pressure_ulcer_injury",
+  "line_type",
+  "nasogastric_orogastric_tube",
+  
+  "extravasation",
+  "epidural_line",
+  "intraosseous_line"
+)
+  
+
+independent_basic = c(
+  
+  "icu_admin_flag",
+  "age",
+  "height_cm",
+  "weight",
+  "sex",
+  
+  "primary_anes_type_nm",
+  "asa_rating_c",
+  
+  "patient_class_group"
+)
+```
+
+Summary table:
+
+```{r}
+
+data_train %>% summary_factorlist(dependent = dependent, explanatory = independent_all) %>% 
+  mydt()
+#data_train %>% ff_glimpse()
+```
+
+## Fit lasso-regularized logistic regression model
+
+Logistic regression with only patient information explanatory variables:
+
+```{r warining = F, output = F}
+
+#test= sets_train %>% complete("all")
+
+lasso_out_basic = sets_train %>%
+  complete("all") %>% 
+  map(function(.x){
+    
+    # Define X and y
+    .x %>% 
+      #complete() %>% 
+      select(dependent, all_of(independent_basic)) %>% 
+      drop_na() %>% 
+      recipe(respiratory_comp ~ .) %>% 
+      step_normalize(all_numeric()) %>% 
+      step_dummy(all_nominal(), -respiratory_comp) %>%
+      step_naomit(everything()) %>% 
+      prep() %>% 
+      juice() %T>%
+      {X <<- select(., -respiratory_comp) %>% as.matrix()} %>% 
+      {y <<- pull(., respiratory_comp) %>% as.numeric() %>% {. - 1}}
+    
+    # Fit
+    fits = glmnet(X, y, 
+                  family = "binomial", maxit = 2000, 
+                  standardize = T)
+    
+    # K-fold CV, nfolds = 10
+    cv.fits = cv.glmnet(X, y, standardize = TRUE,
+                        family = "binomial", maxit = 2000,
+                        type.measure = "auc")
+    
+    #opt.lam = c(cv.fits$lambda.min, cv.fits$lambda.1se)
+    opt.lam = cv.fits$lambda.min
+    
+    list("fit" = fits, 
+         "cv" = cv.fits, 
+         "opt.lam" = opt.lam)
+  }
+  )
+
+```
+
+We also fir a model based on the patient info+LDA:
+
+```{r echo=F, waring=F, output=F}
+
+lasso_out_all = sets_train %>%
+  complete("all") %>% 
+  map(function(.x){
+    
+    # Define X and y
+    .x %>%
+      select(dependent, all_of(independent_all)) %>% 
+      drop_na() %>% 
+      recipe(respiratory_comp ~ .) %>% 
+      step_normalize(all_numeric()) %>% 
+      step_dummy(all_nominal(), -respiratory_comp) %>%
+      step_naomit(everything()) %>% 
+      prep() %>% 
+      juice() %T>%
+      {X <<- select(., -respiratory_comp) %>% as.matrix()} %>% 
+      {y <<- pull(., respiratory_comp) %>% as.numeric() %>% {. - 1}}
+    
+    # Fit
+    fits = glmnet(X, y, 
+                  family = "binomial", maxit = 2000)
+    
+    # K-fold CV, nfolds = 10
+    cv.fits = cv.glmnet(X, y, standardize = T,
+                        family = "binomial", maxit = 2000,
+                        type.measure = "auc")
+    
+    opt.lam = cv.fits$lambda.min
+    
+
+    
+    list("fit" = fits, 
+         "cv" = cv.fits, 
+         "opt.lam" = opt.lam)
+  }
+  )
+```
+
+The cross-validated performance per regularization strength for the patient info model (only three variables used at peak performance):
+
+```{r}
+lasso_out_basic[[1]]$cv %>% plot()
+```
+
+The cross-validated performance per regularization strength for the patient info_LDA model:
+
+```{r}
+lasso_out_all[[1]]$cv %>% plot()
+```
+
+The model based only on patient info uses only weight, asa ratng, and the indicator of ICU admission at optimal regularization strength (showing all variables that have non-zero coefficents in more than half of mice imputation replicates):
+
+```{r}
+lasso_out_basic %>% 
+  map(function(fit){
+    fit$fit %>% 
+      coef(s=fit$opt.lam) %>% 
+      as.matrix() %>% 
+      as.data.frame()
+  }) %>% 
+  bind_cols() %>%
+  rownames_to_column("row_names") %>% 
+  rowwise() %>%
+  mutate(frac_zero = sum(c_across(-row_names ) == 0)/(ncol(.)-1) ) %>% 
+  filter(frac_zero<0.5) %>% 
+  select(-frac_zero) %>% 
+  rowwise() %>%
+  mutate(pooled_coef = mean(c_across(-row_names ) )) %>% 
+  select(row_names, pooled_coef) %>% 
+  arrange(pooled_coef) %>% 
+  mydt()
+```
+
+The model that also includes LDA uses the following variables at optimal regularization strength (again, showing all variables that have non-zero coefficents in more than half of mice imputation replicates):
+
+```{r}
+lasso_out_all %>% 
+  map(function(fit){
+    fit$fit %>% 
+      coef(s=fit$opt.lam) %>% 
+      as.matrix() %>% 
+      as.data.frame()
+  }) %>% 
+  bind_cols() %>%
+  rownames_to_column("row_names") %>% 
+  rowwise() %>%
+  mutate(frac_zero = sum(c_across(-row_names ) == 0)/(ncol(.)-1) ) %>% 
+  filter(frac_zero<0.5) %>% 
+  select(-frac_zero) %>% 
+  rowwise() %>%
+  mutate(pooled_coef = mean(c_across(-row_names ) )) %>% 
+  select(row_names, pooled_coef) %>% 
+  arrange(pooled_coef) %>% 
+  mydt()
+```
+
+## Make predictions on the hold-out test set:
+
+Make predictions based on patient information only model:
+
+```{r output+F, warning=F}
+
+pred_basic = map2(lasso_out_basic, sets_test %>% complete("all"),
+                  function(lasso, X_in){
+                    X = X_in %>% 
+                      select(dependent, all_of(independent_basic)) %>%
+                      drop_na() %>% 
+                      recipe(respiratory_comp ~ .) %>% 
+                      step_normalize(all_numeric()) %>% 
+                      step_dummy(all_nominal(), -respiratory_comp) %>%
+                      step_naomit(everything()) %>% 
+                      prep() %>% 
+                      juice() %>%
+                      mutate(y = respiratory_comp %>%  as.numeric() %>% {. - 1}) %>%
+                      select(., -respiratory_comp) %>% 
+                      as.matrix()
+
+                    pred = predict(
+                      lasso$fit,
+                      X,
+                      s = lasso$opt.lam,
+                      type = "response",  #c("link", "response", "coefficients", "nonzero")
+                      )
+                 
+                    out = bind_cols(pred, X %>% 
+                                      as.data.frame() %>% 
+                                      select(y)) %>% 
+                      dplyr::rename("prediction" = "s1", "truth" = "y") %>% 
+                      mutate(truth = factor(truth))
+                  })
+```
+
+Make predictions based on patient information + LDA model:
+
+```{r warining=F, output=F}
+pred_all = map2(lasso_out_all, sets_test %>% complete("all"),
+                  function(lasso, X_in){
+                    X = X_in %>% 
+                      select(dependent, all_of(independent_all)) %>%
+                      drop_na() %>% 
+                      recipe(respiratory_comp ~ .) %>% 
+                      step_normalize(all_numeric()) %>% 
+                      step_dummy(all_nominal(), -respiratory_comp) %>%
+                      step_naomit(everything()) %>% 
+                      prep() %>% 
+                      juice() %>%
+                      mutate(y = respiratory_comp %>%  as.numeric() %>% {. - 1}) %>%
+                      select(., -respiratory_comp) %>% 
+                      as.matrix()
+
+                    pred = predict(
+                      lasso$fit,
+                      X,
+                      s = lasso$opt.lam,
+                      type = "response",  #c("link", "response", "coefficients", "nonzero")
+                      )
+                 
+                    out = bind_cols(pred, X %>% 
+                                      as.data.frame() %>% 
+                                      select(y)) %>% 
+                      dplyr::rename("prediction" = "s1", "truth" = "y") %>% 
+                      mutate(truth = factor(truth))
+                  })
+```
+
+Calculate ROC curves and AUC
+
+```{r warning=F, output=F}
+
+# ROC curves
+roc_curves_basic = map2(pred_basic, seq(length(pred_basic)), 
+                        function(pred, i){
+    r = roc_curve(pred, truth, prediction, event_level = "second")
+    r = r %>% 
+      mutate(mice_set = i)
+  }) %>% 
+  bind_rows()
+
+# PR curves
+pr_curves_basic = map2(pred_basic, seq(length(pred_basic)), 
+                        function(pred, i){
+    r = pr_curve(pred, truth, prediction, event_level = "second")
+    r = r %>% 
+      mutate(mice_set = i)
+  }) %>% 
+  bind_rows()
+
+# AUC
+auc_basic = map2(pred_basic, seq(length(pred_basic)), 
+                        function(pred, i){
+                          
+    r = pROC::roc(pred$truth, pred$prediction)
+    auc_int = pROC::ci.auc(r)
+    auc_est = pROC::auc(r)
+    
+#    r2 = roc_curve(pred_basic[[1]], truth, prediction, event_level = "second")
+    auc = roc_auc(pred, truth, prediction, event_level = "second")
+    
+    auc = auc %>% mutate(auc_lower = auc_int[[1]],
+                     auc_upper = auc_int[[3]],
+                     auc_alt = auc_est[[1]],
+                     auc_se = (auc_int[[3]]-auc_int[[1]])/3.92
+    ) %>% 
+      mutate(mice_set = i)
+  }) %>% 
+  bind_rows()
+
+# PRAUC
+auprc_basic = map2(pred_basic, seq(length(pred_basic)), 
+                        function(pred, i){
+                          
+
+    auc = pr_auc(pred, truth, prediction, event_level = "second") %>% 
+      mutate(mice_set = i)
+  }) %>% 
+  bind_rows()
+
+# Pooled AUC
+# Usin Rubin's rules to pool the AUC estimate and SE
+
+pooled_estimate = auc_basic$.estimate %>% mean()
+var_within = auc_basic$auc_se %>% mean()
+var_between = auc_basic$.estimate %>% var()
+pooled_se = var_within+var_between*(1+1/nrow(auc_basic))
+pooled_ci = pooled_se*3.92/2.
+pooled_auc_basic = data.frame("pooled_estimate" = pooled_estimate,
+                              "pooled_lower" = pooled_estimate-pooled_ci,
+                              "pooled_upper" = pooled_estimate+pooled_ci,
+                              "pooled_se" = pooled_se)
+
+# Pooled AUPRC
+
+pooled_prauc_basic = auprc_basic$.estimate %>% mean()
+```
+
+```{r warning=F, echo=F, error=F}
+
+roc_curves_all = map2(pred_all, seq(length(pred_all)), 
+                        function(pred, i){
+    r = roc_curve(pred, truth, prediction, event_level = "second")
+    r = r %>% 
+      mutate(mice_set = i)
+  }) %>% 
+  bind_rows()
+
+pr_curves_all = map2(pred_all, seq(length(pred_all)), 
+                        function(pred, i){
+    r = pr_curve(pred, truth, prediction, event_level = "second")
+    r = r %>% 
+      mutate(mice_set = i)
+  }) %>% 
+  bind_rows()
+
+
+auc_all = map2(pred_all, seq(length(pred_all)), 
+                        function(pred, i){
+                          
+    r = pROC::roc(pred$truth, pred$prediction)
+    auc_int = pROC::ci.auc(r)
+    auc_est = pROC::auc(r)
+    
+#    r2 = roc_curve(pred_basic[[1]], truth, prediction, event_level = "second")
+    auc = roc_auc(pred, truth, prediction, event_level = "second")
+    
+    auc = auc %>% mutate(auc_lower = auc_int[[1]],
+                     auc_upper = auc_int[[3]],
+                     auc_alt = auc_est[[1]],
+                     auc_se = (auc_int[[3]]-auc_int[[1]])/3.92
+    ) %>% 
+      mutate(mice_set = i)
+  }) %>% 
+  bind_rows()
+
+
+
+auprc_all = map2(pred_all, seq(length(pred_all)), 
+                        function(pred, i){
+                          
+
+    auc = pr_auc(pred, truth, prediction, event_level = "second") %>% 
+      mutate(mice_set = i)
+  }) %>% 
+  bind_rows()
+
+
+# Pooled AUC
+# Usin Rubin's rules to pool the AUC estimate and SE
+
+pooled_estimate = auc_all$.estimate %>% mean()
+var_within = auc_all$auc_se %>% mean()
+var_between = auc_all$.estimate %>% var()
+pooled_se = var_within+var_between*(1+1/nrow(auc_all))
+pooled_ci = pooled_se*3.92/2.
+pooled_auc_all = data.frame("pooled_estimate" = pooled_estimate,
+                              "pooled_lower" = pooled_estimate-pooled_ci,
+                              "pooled_upper" = pooled_estimate+pooled_ci,
+                              "pooled_se" = pooled_se)
+
+# Pooled AUPRC
+
+pooled_prauc_all = auprc_all$.estimate %>% mean()
+```
+
+## ROC curves
+
+```{r}
+bind_rows(
+  roc_curves_basic %>% mutate(explanatory = "info"),
+  roc_curves_all %>% mutate(explanatory = "info+LDA")
+) %>% 
+  #filter(mice_set == 1 | mice_set == 2) %>% 
+  ggplot(aes(x = 1-specificity, y=sensitivity, group = mice_set, color = explanatory))+
+  geom_path( linewidth = 0.2)+
+  geom_abline(linetype=3)
+```
+
+The pooled AUC
+
+```{r}
+bind_rows(
+  pooled_auc_basic %>% mutate(explanatory = "info"),
+  pooled_auc_all %>% mutate(explanatory = "info+LDA")) %>% 
+  select(explanatory, pooled_estimate, pooled_lower, pooled_upper) %>% 
+  mutate(pooled_estimate = round(pooled_estimate, 3)) %>% 
+  mutate(pooled_lower = round(pooled_lower, 3)) %>% 
+  mutate(pooled_estimate = round(pooled_estimate, 3)) 
+```
+
+## Precision-recall curves and AUPRC
+
+```{r}
+pr_curves_basic %>% 
+  mutate(explanatory = "info") %>% 
+  ggplot(aes(x=recall, y=precision, group = mice_set, color = explanatory))+
+  geom_path(linewidth = 0.2) +
+  geom_path(data = pr_curves_all %>% 
+  mutate(explanatory = "info+LDA", size = 0.2))
+```
+
+The Pooled AUPRC is `r pooled_prauc_basic %>% round(3)` for the info and `r pooled_prauc_all %>% round(3)` for info with LDA
