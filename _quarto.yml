@@ -11,6 +11,8 @@ website:
       - procedure_events.qmd
       - complications.qmd
       - complications_pat_inf_linked.qmd
+      - baseline_LR_preparation.qmd
+      - baseline_LR_model.qmd
       
 
 format:

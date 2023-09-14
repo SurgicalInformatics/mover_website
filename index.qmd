@@ -17,3 +17,6 @@ Current pages:
 
 [Complications by procedure](complications_pat_inf_linked.qmd)
 
+[Preparation for baseline resp. complications model](baseline_LR_preparation.qmd)
+
+[LR baseline resp. complications model](baseline_LR_model.qmd)

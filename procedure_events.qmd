@@ -18,9 +18,6 @@ procedure_events = read_csv("/home/common/mover_data/surginf_cleaned/patient_pro
 
 ```
 
-
-
-
 # Procedure events by prevalence
 
 ```{r}
@@ -28,8 +25,6 @@ procedure_events %>%
   count(event_display_name, sort = TRUE) %>% 
   mydt(100)
 ```
-
-
 
 # Time of day for 10 most frequent events
 
@@ -55,4 +50,3 @@ procedure_events %>%
   count(note_text, sort = TRUE) %>% 
   mydt()
 ```
-

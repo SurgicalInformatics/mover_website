@@ -2,6 +2,8 @@
 title: "Baseline model preparation"
 format: html
 editor: visual
+execute:
+  freeze: true
 ---
 
 ## Prepare baseline modeling data (including imputation)

@@ -20,6 +20,7 @@ theme_set(theme_bw())
 source("functions.R")
 ```
 
+
 # Introduction
 
 We use the prepared and imputed data from Baseline model preparation and develop a logistic regression model of respiratory complications based on basic patient information. As a comparison we also develop a model including information from the patient LDA data set which details lines, drains, and airway devices used on the patient.
@@ -42,6 +43,7 @@ We will perform the following analysis steps:
 
 These imputed date were generated in the Baseline model preparation script.
 
+
 ```{r}
 #sets_train = read_rds("./results/mice_train.rds")
 #sets_test = read_rds("./results/mice_test.rds")
@@ -57,9 +59,11 @@ data_train = read_rds("/home/common/mover_data/results/baseline_imputation/train
 data_test = read_rds("/home/common/mover_data/results/baseline_imputation/test_set.rds")
 ```
 
+
 ## Exaplanatory variables
 
 We define two stes of explanatory variables. One based only on patient information and another that also includes LDA information:
+
 
 ```{r}
 dependent = "respiratory_comp"
@@ -112,7 +116,9 @@ independent_basic = c(
 )
 ```
 
+
 Summary table:
+
 
 ```{r}
 
@@ -121,9 +127,11 @@ data_train %>% summary_factorlist(dependent = dependent, explanatory = independe
 #data_train %>% ff_glimpse()
 ```
 
+
 ## Fit lasso-regularized logistic regression model
 
 Logistic regression with only patient information explanatory variables:
+
 
 ```{r warining = F, output = F}
 
@@ -168,7 +176,9 @@ lasso_out_basic = sets_train %>%
 
 ```
 
+
 We also fir a model based on the patient info+LDA:
+
 
 ```{r echo=F, waring=F, output=F}
 
@@ -209,19 +219,25 @@ lasso_out_all = sets_train %>%
   )
 ```
 
+
 The cross-validated performance per regularization strength for the patient info model (only three variables used at peak performance):
+
 
 ```{r}
 lasso_out_basic[[1]]$cv %>% plot()
 ```
 
+
 The cross-validated performance per regularization strength for the patient info_LDA model:
+
 
 ```{r}
 lasso_out_all[[1]]$cv %>% plot()
 ```
 
+
 The model based only on patient info uses only weight, asa ratng, and the indicator of ICU admission at optimal regularization strength (showing all variables that have non-zero coefficents in more than half of mice imputation replicates):
+
 
 ```{r}
 lasso_out_basic %>% 
@@ -244,7 +260,9 @@ lasso_out_basic %>%
   mydt()
 ```
 
+
 The model that also includes LDA uses the following variables at optimal regularization strength (again, showing all variables that have non-zero coefficents in more than half of mice imputation replicates):
+
 
 ```{r}
 lasso_out_all %>% 
@@ -267,9 +285,11 @@ lasso_out_all %>%
   mydt()
 ```
 
+
 ## Make predictions on the hold-out test set:
 
 Make predictions based on patient information only model:
+
 
 ```{r output+F, warning=F}
 
@@ -303,7 +323,9 @@ pred_basic = map2(lasso_out_basic, sets_test %>% complete("all"),
                   })
 ```
 
+
 Make predictions based on patient information + LDA model:
+
 
 ```{r warining=F, output=F}
 pred_all = map2(lasso_out_all, sets_test %>% complete("all"),
@@ -336,7 +358,9 @@ pred_all = map2(lasso_out_all, sets_test %>% complete("all"),
                   })
 ```
 
+
 Calculate ROC curves and AUC
+
 
 ```{r warning=F, output=F}
 
@@ -474,7 +498,9 @@ pooled_auc_all = data.frame("pooled_estimate" = pooled_estimate,
 pooled_prauc_all = auprc_all$.estimate %>% mean()
 ```
 
+
 ## ROC curves
+
 
 ```{r}
 bind_rows(
@@ -487,7 +513,9 @@ bind_rows(
   geom_abline(linetype=3)
 ```
 
+
 The pooled AUC
+
 
 ```{r}
 bind_rows(
@@ -499,7 +527,9 @@ bind_rows(
   mutate(pooled_estimate = round(pooled_estimate, 3)) 
 ```
 
+
 ## Precision-recall curves and AUPRC
+
 
 ```{r}
 pr_curves_basic %>% 
@@ -510,4 +540,6 @@ pr_curves_basic %>%
   mutate(explanatory = "info+LDA", size = 0.2))
 ```
 
+
 The Pooled AUPRC is `r pooled_prauc_basic %>% round(3)` for the info and `r pooled_prauc_all %>% round(3)` for info with LDA
+
