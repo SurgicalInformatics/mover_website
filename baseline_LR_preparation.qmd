@@ -181,7 +181,7 @@ impute_data_test %>% write_rds("/home/common/mover_data/results/baseline_imputat
 
 Impute training data:
 
-```{r echo=T, warning=F, output=F}
+```{r eval=F, echo=T, warning=F, output=F}
 
 df = impute_data_train%>% 
   select(dependent, all_of(independent ))
@@ -206,7 +206,7 @@ sets_train %>% write_rds("/home/common/mover_data/results/baseline_imputation/mi
 
 Impute the test data:
 
-```{r echo=T, warning=F, output=F}
+```{r eval=F, echo=T, warning=F, output=F}
 
 df = impute_data_test%>% 
   select(dependent, all_of(independent ))

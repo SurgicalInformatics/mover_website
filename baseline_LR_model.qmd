@@ -125,7 +125,7 @@ data_train %>% summary_factorlist(dependent = dependent, explanatory = independe
 
 Logistic regression with only patient information explanatory variables:
 
-```{r warining = F, output = F}
+```{r eval=F, warining = F, output = F}
 
 #test= sets_train %>% complete("all")
 
@@ -166,11 +166,18 @@ lasso_out_basic = sets_train %>%
   }
   )
 
+#lasso_out_basic %>% 
+#  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic.rds")
 ```
 
-We also fir a model based on the patient info+LDA:
+```{r echo=F, output=F, warning=F}
+lasso_out_basic = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic.rds")
 
-```{r echo=F, waring=F, output=F}
+```
+
+We also fit a model based on the patient info+LDA:
+
+```{r eval=F, echo=F, waring=F, output=F}
 
 lasso_out_all = sets_train %>%
   complete("all") %>% 
@@ -207,6 +214,13 @@ lasso_out_all = sets_train %>%
          "opt.lam" = opt.lam)
   }
   )
+
+#lasso_out_all %>% 
+#  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_all.rds")
+```
+
+```{r echo=F, output=F, warning=F}
+lasso_out_all = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_all.rds")
 ```
 
 The cross-validated performance per regularization strength for the patient info model (only three variables used at peak performance):
