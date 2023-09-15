@@ -48,7 +48,7 @@ Respiratory complications are also a bit lower than they should be: 598 (here) v
 
 Where could these missing outcomes be? 
 
-# Complciations table
+# Complications table
 
 Note that the counts here are for unique combinations of complications.
 
