@@ -1,5 +1,7 @@
 ---
 title: "Demographics (patient information)"
+execute:
+  freeze: auto
 ---
 
 The cleaning script used here is at: [GitHub: mover, 01_patient_information.R](https://github.com/SurgicalInformatics/mover/blob/main/01_patient_information.R)
@@ -19,6 +21,8 @@ The patient information dataset includes `r n_distinct(demographics_orig$MRN)` p
 
 
 Variable list: [MOVER: Patient Info Table](https://mover.ics.uci.edu/patient-info-table.html)
+
+Automatically generated data dictionary, including interactions and missingness: [pointblank::scan_data(demographics)](https://argoshare.is.ed.ac.uk/mover_pointblank/)
 
 
 ```{r}
