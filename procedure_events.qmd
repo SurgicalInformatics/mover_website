@@ -2,6 +2,8 @@
 title: "Patient procedure events"
 format: html
 editor: visual
+execute:
+  freeze: auto
 ---
 
 The cleaning script used here is at: [GitHub: mover, 04_patient_procedure_events.R](https://github.com/SurgicalInformatics/mover/blob/main/04_patient_procedure_events.R)

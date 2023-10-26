@@ -2,6 +2,8 @@
 title: "Complications by procedure"
 format: html
 editor: visual
+execute:
+  freeze: auto
 ---
 
 ## Examine the complications linked to procedures

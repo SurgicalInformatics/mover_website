@@ -3,7 +3,7 @@ title: "Logistic regression baseline model of respiratory complications"
 format: html
 editor: visual
 execute:
-  freeze: true
+  freeze: auto
 ---
 
 ```{r output=F, warning=F}

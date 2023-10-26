@@ -2,9 +2,11 @@
 title: "Complications"
 format: html
 editor: source
+execute:
+  freeze: auto
 ---
 
-The cleaning scripts used to create these files are at:
+The cleaning scripts used to create these files are at:  
 [GitHub: mover, 01_patient_information.R](https://github.com/SurgicalInformatics/mover/blob/main/01_patient_information.R)  
 [GitHub: mover, 02_complications.R](https://github.com/SurgicalInformatics/mover/blob/main/02_complications.R)
 
@@ -46,7 +48,7 @@ Respiratory complications are also a bit lower than they should be: 598 (here) v
 
 Where could these missing outcomes be? 
 
-# Complciations table
+# Complications table
 
 Note that the counts here are for unique combinations of complications.
 
@@ -62,5 +64,15 @@ There's a further column called 'complications full' with more information, the 
 complications_cleaned %>% 
   count(comp_full, sort = TRUE) %>% 
   mydt(50)
+```
+
+If I read in the original provided dataset, that's the same number of 'Death', so it's not the case of the cleaning scripts dropping these missing events.
+
+```{r}
+complications_orig = read_csv(paste0(Sys.getenv("epic_emr"), "patient_post_op_complications.csv"))
+
+complications_orig %>% 
+  distinct() %>% 
+  count(str_detect(SMRTDTA_ELEM_VALUE, "Death"))
 ```
 

@@ -4,8 +4,16 @@ username: rots
 account: rots
 server: argoshare.is.ed.ac.uk
 hostUrl: https://argoshare.is.ed.ac.uk/__api__
+<<<<<<< HEAD
 appId: 645
 bundleId: 3298
 url: https://argoshare.is.ed.ac.uk/mover_dd/
 asMultiple: FALSE
 asStatic: TRUE
+=======
+appId: 635
+bundleId: 3271
+url: https://argoshare.is.ed.ac.uk/mover_dd/
+asMultiple: FALSE
+asStatic: TRUE
+>>>>>>> f0d9e62dd852f06596c535d59685453898327266
