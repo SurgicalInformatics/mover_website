@@ -2,8 +2,8 @@
 title: "Baseline model preparation"
 format: html
 editor: visual
-execute:
-  freeze: true
+#execute:
+#  freeze: true
 ---
 
 ## Prepare baseline modeling data (including imputation)
@@ -32,6 +32,295 @@ complications_cleaned = read_csv("/home/common/mover_data/surginf_cleaned/compli
 patient_lda = read_csv("/home/common/mover_data/srv/disk00/MOVER/EPIC/EMR/patient_lda.csv") %>% 
   distinct %>% 
   janitor::clean_names()
+
+# Medications
+
+patient_medications <- read_csv("/home/common/mover_data/srv/disk00/MOVER/EPIC/EMR/patient_medications.csv") %>% 
+  distinct %>% 
+  janitor::clean_names()
+
+# make a table matching medication IDs to their code
+med_ids = patient_medications %>% 
+  select(medication_id, medication_nm) %>% 
+  mutate(medication_nm = tolower(medication_nm)) %>% 
+  distinct(medication_id, .keep_all = T) %>% 
+  rowwise() %>% 
+  mutate(collapsed_med_id = strsplit(medication_nm, split = "[0-9]+")[[1]][1]) %>% 
+  select(medication_id, collapsed_med_id) %>% 
+  distinct()
+
+#med_ids %>% distinct(collapsed_med_id) %>% nrow()
+
+med_ids %>% write_rds("/home/common/mover_data/results/baseline_model/med_ids.rds")
+
+# Labs
+
+patient_labs <- read_csv("/home/common/mover_data/srv/disk00/MOVER/EPIC/EMR/patient_labs.csv") %>% 
+  distinct %>% 
+  janitor::clean_names()
+
+
+
+# Patient procedure events
+
+patient_procedure_events <- read_csv("/home/common/mover_data/srv/disk00/MOVER/EPIC/EMR/patient_procedure events.csv") %>% 
+  distinct %>% 
+  janitor::clean_names() %>% 
+  mutate(event_time = event_time %>% as.POSIXct(format="%m/%d/%Y %H:%M", tz="UTC"))
+
+test = patient_procedure_events %>% count(event_display_name)
+
+
+
+# derived O2 outcome variables
+spo2_intra90_below90 = read_csv("/home/common/mover_data/surginf_cleaned/spo2_intraop_below90.csv") %>% 
+  distinct %>% 
+  mutate(spo2_intra90 = case_when(
+    is.na(meas_value) ~ 0,
+    TRUE ~ 1
+  ) %>% factor()) %>% 
+  janitor::clean_names()
+
+#/home/common/mover_data/surginf_cleaned/spo2_postop_below90.csv
+
+spo2_postop_below90 = read_csv("/home/common/mover_data/surginf_cleaned/spo2_postop_below90.csv") %>% 
+  distinct %>% 
+   mutate(spo2_post90 = case_when(
+    is.na(meas_value) ~ 0,
+    TRUE ~ 1
+  ) %>% factor()) %>% 
+  janitor::clean_names()
+
+```
+
+```{r}
+
+
+# transform patient medications to indicator.
+# Remove post-operative medications.
+# One olumn for each medication and an indicator varibale for each row.
+
+patient_medications = patient_medications %>% 
+  filter(record_type != "POST-OP") %>% 
+  left_join(., med_ids, by = "medication_id") %>% 
+  select(log_id, mrn, collapsed_med_id) %>% 
+  count(log_id, mrn, collapsed_med_id) %>% 
+  pivot_wider(names_from = collapsed_med_id, values_from = n) %>% 
+  rename_with(~ paste0("med_", .), -all_of(c("log_id", "mrn")))%>% 
+  replace(is.na(.), 0)
+
+
+```
+
+```{r}
+# Identify Labs that are used in Forte et.al.
+#
+
+test = patient_labs %>% 
+  select(lab_name, lab_code) %>% 
+  distinct()
+
+# LDH (lactate dehydrogenase)
+forte_lab_1 = test %>%   
+  filter(grepl( "actate ", lab_name, fixed = TRUE)) %>% 
+  head()
+
+# thrombocytes (aka Platelets)
+forte_lab_2 = 
+  test %>%   
+  filter(lab_name=="Platelets") %>% 
+  head()
+
+# Urea (aka urea nitrogen)
+forte_lab_3 = 
+  test %>%   
+  filter(lab_name=="Urea nitrogen") %>% 
+  head()
+
+# Creatinine
+forte_lab_4 = 
+  test %>%   
+  filter(lab_name=="Creatinine") %>% 
+  head()
+
+# Glocose
+forte_lab_5 = 
+  test %>%   
+  filter(lab_name == "Glucose") %>% 
+  head()
+
+# Neutrophils
+forte_lab_6 = 
+  test %>%   
+  filter(lab_name == "Neutrophils") %>% 
+  head()
+
+
+forte_labs = bind_rows(
+    forte_lab_1,
+    forte_lab_2,
+    forte_lab_3,
+    forte_lab_4,
+    forte_lab_5,
+    forte_lab_6
+)
+
+
+```
+
+```{r}
+# Procedure times
+#
+# extract the earliest and latest procedure events for each patient
+#
+start_times =  patient_procedure_events %>% 
+  #filter(event_display_name == "Anesthesia Start") %>% 
+  group_by(log_id, mrn) %>% 
+  summarise(
+    aes_start = min(event_time)
+  )
+
+end_times =  patient_procedure_events %>% 
+  #filter(event_display_name == "Anesthesia Stop") %>% 
+  group_by(log_id, mrn) %>% 
+  summarise(
+    aes_end = max(event_time)
+  )
+
+
+procedure_times = full_join(start_times, end_times)
+  
+
+```
+
+```{r}
+# Wrangle Lab measurments
+# count the (log_id, mrn) pairs with each lab measurment
+
+# Total number of patiients in Labs (for calculating fraction with 
+# given lab measurement)
+n_patients = patient_labs %>% 
+  distinct(log_id, mrn) %>% 
+  nrow()
+
+# Number and fraction of patients (lod_id, mrn)
+lab_patient_counts = patient_labs %>% 
+  group_by(lab_code) %>% 
+  summarise(patients = n_distinct(log_id, mrn),
+            lab_name = first(lab_name)) %>% 
+  ungroup() %>% 
+  mutate(frac = patients/n_patients)
+
+#Export for name conversion later
+lab_patient_counts %>% write_rds("lab_patient_counts.rds")
+
+# Examine the frequency at with the labs in Forte et.al. are measured
+test = lab_patient_counts %>% 
+  filter(lab_name %in% (forte_labs %>% pull("lab_name")))
+
+
+# in order to be able to impute we keep labs with <=30% missingness
+
+keep_labs = lab_patient_counts %>% 
+  filter(frac >= 0.7) %>% 
+  pull(lab_code)
+
+patient_labs_processed = patient_labs %>% 
+  filter(lab_code %in% keep_labs)
+
+# does each lab always use the same units?
+
+labs_with_multiple_units = patient_labs_processed %>%
+  #dplyr::slice(1:10000) %>%
+  drop_na(measurement_units) %>% 
+  drop_na(observation_value) %>% 
+  mutate(measurement_units = tolower(measurement_units)) %>% 
+  filter(measurement_units != "unknown") %>% 
+  group_by(lab_code) %>% 
+  summarise(
+    lab_name = lab_name %>% first(),
+    number_of_units = n_distinct(measurement_units)
+  ) %>% 
+  ungroup() %>% 
+  filter(number_of_units>1)
+
+
+patient_labs_processed %>% 
+  filter(lab_code == "26515-7") %>% 
+  pull(measurement_units) %>% 
+  table()
+
+# The platelet counts are measured in two units but one is used much more commonly.
+# we retain the most common:
+
+patient_labs_processed = patient_labs_processed %>% 
+  filter(measurement_units != "THOUS/ CU MM")
+
+#
+# Indicate if lab taken pre-post surgery
+#
+
+patient_labs_processed = patient_labs_processed %>% 
+  left_join(procedure_times) 
+
+patient_labs_processed = patient_labs_processed %>% 
+  mutate(lab_order = case_when(
+    collection_datetime<=aes_start ~ "pre_op",
+    collection_datetime>= aes_end ~ "post_op",
+    ((collection_datetime>aes_start) & (collection_datetime<aes_end))~"intra_op",
+    TRUE ~ "None"
+  ))
+
+test = patient_labs_processed %>% count(lab_order)
+
+# The labs are post-operative wherever the times are available to determine.
+
+# summarize the measurements by counting the number of abnormal mesurements
+
+patient_labs_sum = patient_labs_processed %>% 
+  group_by(log_id, mrn, lab_code) %>% 
+  summarise(val_N = length(abnormal_flag[abnormal_flag == "N"]),
+            val_H =  length(abnormal_flag[abnormal_flag == "H"]),
+            val_L =  length(abnormal_flag[abnormal_flag == "L"]),
+            val_HH =  length(abnormal_flag[abnormal_flag == "HH"]),
+            val_LL =  length(abnormal_flag[abnormal_flag == "LL"])
+            ) %>% 
+  ungroup() %>% 
+  mutate(
+    any_abnormal = case_when(
+      (val_H + val_L +val_HH +val_LL)>0 ~ 1,
+      TRUE ~ 0
+    ) %>% factor,
+    
+     any_abnormal_ext = case_when(
+      (val_HH +val_LL)>0 ~ 1,
+      TRUE ~ 0
+    ) %>% factor()
+  ) 
+
+patient_labs_sum_wide = patient_labs_sum %>%  
+  select(log_id, mrn, lab_code, any_abnormal) %>% 
+  mutate(lab_code = paste0("lab_", lab_code, "_any")) %>% 
+  pivot_wider(names_from = lab_code, values_from = any_abnormal)
+
+patient_labs_sum_wide_ext = patient_labs_sum %>%  
+  select(log_id, mrn, lab_code, any_abnormal_ext) %>% 
+  mutate(lab_code = paste0("lab_", lab_code, "_ext")) %>% 
+  pivot_wider(names_from = lab_code, values_from = any_abnormal_ext)
+
+
+
+# Transform to give each lab its own column:
+# HOWEVER, each patient has replicated measurments at different times
+# Perhaps this is best used as a tie seriese, but we could also summarise
+# to make a tabular format for LR.
+
+#patient_labs_processed_col = patient_labs_processed %>% 
+#  select(log_id, mrn, lab_name, observation_value) %>% 
+#  pivot_wider(names_from = lab_name, values_from = observation_value) #%>% 
+##  rename_with(~ paste0("med_", .), -all_of(c("log_id", "mrn")))%>% 
+##  replace(is.na(.), 0)
+
 ```
 
 # Introduction
@@ -80,17 +369,29 @@ lda_grouped %>% glimpse()
 
 ## Link complications, patient info and LDA
 
-Import and link complications with patient info. Not that we are using an inner join, which retains only (log_id, mrn) that are present in all the liked data sets.
+Import and link complications with patient info. Note that we are using an inner join, which retains only (log_id, mrn) that are present in all the liked data sets.
 
 ```{r}
 
-linked_data = inner_join(complications_cleaned, 
+
+
+
+linked_data = inner_join(complications_cleaned %>% select(-disch_disp), 
                          patient_information, 
                          by = join_by(log_id, mrn)) %>%
   inner_join(lda_grouped, by = join_by(log_id, mrn)) %>%
+  
+  left_join(., patient_medications) %>%      # include medications indicator
+  
+  left_join(patient_labs_sum_wide) %>%       # inclue labs indicator of any abnormality
+  left_join(patient_labs_sum_wide_ext) %>%   # include labs indicator of extreme abnomality
+  
+  left_join(spo2_intra90_below90 %>% select(log_id, mrn, spo2_intra90)) %>%  # include Riinu's SPO2 variable
+  left_join(spo2_postop_below90 %>% select(log_id, mrn, spo2_post90)) %>%    # include Riinu's post-op SPO2 valriable
+  
   distinct(log_id, mrn, .keep_all=T) %>% 
   
-  mutate(primary_anes_type_nm = case_when(
+  mutate(primary_anes_type_nm = case_when(                          
     primary_anes_type_nm == "Moderate Sedation - by non-anesthesia staff only" ~ "moderate_sedation",
     primary_anes_type_nm == "Monitored Anesthesia Care (MAC)" ~ "monitored_anesthesia_care",
     primary_anes_type_nm == "Choice Per Patient on Day of Surgery" ~ "patient_choice_on_day",
@@ -98,6 +399,69 @@ linked_data = inner_join(complications_cleaned,
   )) %>% 
   janitor::clean_names()
 
+
+# retain only the most frequently used medications
+
+number_of_patients = linked_data %>% distinct(mrn) %>% nrow()
+frac_patients = 0.2
+
+frac_patients*number_of_patients
+
+# identify the medications that are used with at least the above frequency
+common_meds = linked_data %>% 
+  select(starts_with("med_")) %>% 
+  mutate_if(is.numeric, ~1 * (. > 0)) %>% 
+  mutate_all(~replace(., is.na(.), 0)) %>% 
+  colSums() %>% 
+  as.data.frame() %>%
+  rownames_to_column() %>% 
+  dplyr::rename("n"=".", "med" = "rowname") %>% 
+  filter(n>frac_patients*number_of_patients)
+  
+# Export for use later converting med codes to names
+common_meds %>% write_rds("common_meds.rds")
+
+# keep only the common medications
+linked_data = linked_data %>% 
+  select(!starts_with("med_"), all_of(common_meds %>% pull(med)) )
+
+
+# Make factor variables factor classes:
+linked_data = linked_data %>% 
+  mutate(
+    any_complication = any_complication %>% factor(),
+    comp_abbr = comp_abbr %>% factor(),
+    comp_full = comp_full %>% factor(),
+    death = death %>% factor(),
+    respiratory_comp = respiratory_comp %>% factor(),
+    disch_disp = disch_disp %>% factor(),
+    disch_disp_c = disch_disp_c %>% factor(),
+    icu_admin_flag = icu_admin_flag %>% factor(),
+    sex = sex %>% factor(),
+    patient_class_group = patient_class_group %>% factor(),
+    primary_anes_type_nm = primary_anes_type_nm %>% factor(),
+    asa_rating_c = asa_rating_c %>% factor(),
+    asa_rating = asa_rating %>% factor(),
+    patient_class_nm = patient_class_nm %>% factor(),
+    primary_procedure_nm = primary_procedure_nm %>% factor()
+  ) %>% 
+  select(-primary_procedure_nm)
+
+linked_data %>% glimpse()
+
+#test %>% names()
+```
+
+```{r}
+rm(patient_medications)
+rm(patient_labs)
+rm(patient_labs_processed)
+rm(patient_procedure_events)
+rm(patient_labs_sum)
+rm(patient_labs_sum_wide)
+rm(patient_labs_sum_wide_ext)
+rm(patient_lda)
+gc()
 ```
 
 ## Define dependent and independent variables
@@ -156,7 +520,18 @@ independent = c(
   "epidural_line",
   "intraosseous_line"
 )
+
+# include the medications:
+independent = c(independent, common_meds %>% pull(med))
   
+# include labs
+independent = c(independent,
+                linked_data %>% select(starts_with("lab_")) %>% names()
+)
+
+# include the so2 variables and death:
+independent = c(independent, "spo2_intra90", "spo2_post90", "death")
+
 impute_data = linked_data %>% 
   select(dependent, all_of(independent)) %>% 
   drop_na(dependent)
@@ -183,6 +558,15 @@ Impute training data:
 
 ```{r eval=F, echo=T, warning=F, output=F}
 
+
+#pred = quickpred(data, 
+#                 mincor = ,
+#                 minpuc = ,
+#                 exclude = dependent)
+
+
+
+
 df = impute_data_train%>% 
   select(dependent, all_of(independent ))
 
@@ -197,7 +581,7 @@ df %>%
 # Run in parallel over 5 cores. 
 sets_train =  
   mice(df, m = 10, predictorMatrix = predM_train, maxit = 10, 
-           n.core = 2)#,  n.imp.core = 5)
+           n.core = 2)#,  n.imp.core = 5) #, nnet.MaxNWts = 2000
 
 #sets_train %>% write_rds("./results/mice_train.rds")
 sets_train %>% write_rds("/home/common/mover_data/results/baseline_imputation/mice_train.rds")
@@ -214,8 +598,8 @@ df = impute_data_test%>%
 df %>% 
   select(dependent, all_of(independent )) %>% 
   missing_predictorMatrix(
-    drop_from_imputed = c(dependent),
-    drop_from_imputer = c(dependent)
+    drop_from_imputed = c(dependent, "death", "spo2_intra90", "spo2_post90"),
+    drop_from_imputer = c(dependent, "death", "spo2_intra90", "spo2_post90")
   ) -> predM_test
 
 # Run for 10 imputed sets with 10 iterations
@@ -226,4 +610,41 @@ sets_test =
 
 #sets_test %>% write_rds("./results/mice_test.rds")
 sets_test %>% write_rds("/home/common/mover_data/results/baseline_imputation/mice_test.rds")
+```
+
+## Death and respiratory complications as the dependent variables
+
+### Treatments
+
+```{r eval=F, echo=T, warning=F, output=F}
+# coding
+#patient_coding <- read_csv("/home/common/mover_data/srv/disk00/MOVER/EPIC/EMR/patient_c#oding.csv") %>% 
+#  distinct %>% 
+#  janitor::clean_names()
+
+#  filter( "SOURCE_NAME" == "Final Diagnosis Primary Code Set")
+#patient_coding %>% pull(S) %>% table()
+#
+#patient_coding %>% filter( source_name == "Final Diagnosis Primary Code Set") %>% head()
+
+patient_information = patient_information %>% 
+  mutate(primary_procedure_nm = primary_procedure_nm %>% tolower())
+
+patient_information =  patient_information %>% 
+  mutate(split_proc = primary_procedure_nm %>%  str_split(",| " ))
+
+test = data.frame(phrases = patient_information$split_proc %>% unlist()) %>% 
+  mutate(phrases = phrases %>% trimws())
+
+patient_information %>% nrow()
+patient_information %>% distinct(primary_procedure_nm) %>% nrow()
+test %>% nrow()
+test %>% distinct(phrases) %>% nrow()
+
+test = test %>% count(phrases)
+
+test = left_join(patient_information %>% select(all_of(c("mrn", "log_id", "primary_procedure_nm"))),
+                 patient_coding %>% select(mrn, ref_bill_code))
+
+patient_information %>% names()
 ```

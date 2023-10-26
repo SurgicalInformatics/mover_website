@@ -13,11 +13,50 @@ library(purrr)
 library(glmnet)
 library(recipes)
 library(yardstick)
+library(patchwork)
+library(magrittr)
 theme_set(theme_bw())
 
 #source("01_read_clean.R")
 #source("../repos/mover_website/functions.R")
 source("functions.R")
+
+
+
+
+
+```
+
+```{r echo=F, output=F}
+# Import tables for converting lab and med names
+
+lab_names = read_rds("lab_patient_counts.rds") %>% 
+  mutate(name_in = paste0("lab_", gsub("-", "_", lab_code), "_")) %>% 
+  mutate(name_out = paste0("LAB_", gsub(" ", "_", lab_name))) %>% 
+  select(name_in, name_out)
+
+lab_name_map = function(lab_name){
+  matches = lab_names %>% 
+    filter(startsWith(lab_name, name_in))
+  
+  if (matches %>% nrow() == 0){
+    #print("no match")
+    out = lab_name
+    } 
+  if (matches %>% nrow() > 1 ) {
+    #print("multiple matches")
+    out = lab_name}
+  if (matches %>% nrow() == 1){
+    out = matches %>% 
+      pull(name_out) %>% 
+      extract2(1)
+  }
+  out
+}
+
+
+#lab_name_map("lab_10333_3_blah")
+#med_names = read_rds("common_meds.rds")
 ```
 
 # Introduction
@@ -43,18 +82,15 @@ We will perform the following analysis steps:
 These imputed date were generated in the Baseline model preparation script.
 
 ```{r}
-#sets_train = read_rds("./results/mice_train.rds")
-#sets_test = read_rds("./results/mice_test.rds")
-#
-#data_train = read_rds("./results/train_set.rds")
-#data_test = read_rds("./results/test_set.rds")
-
 
 sets_train = read_rds("/home/common/mover_data/results/baseline_imputation/mice_train.rds")
 sets_test = read_rds("/home/common/mover_data/results/baseline_imputation/mice_test.rds")
 
 data_train = read_rds("/home/common/mover_data/results/baseline_imputation/train_set.rds")
 data_test = read_rds("/home/common/mover_data/results/baseline_imputation/test_set.rds")
+
+
+data_train %>% pull(asa_rating_c) %>% table()
 ```
 
 ## Exaplanatory variables
@@ -63,100 +99,135 @@ We define two stes of explanatory variables. One based only on patient informati
 
 ```{r}
 dependent = "respiratory_comp"
-independent_all = c(
-  
+
+# Basic patient information
+basic_features = c(
   "icu_admin_flag",
   "age",
   "height_cm",
   "weight",
   "sex",
-  
   "primary_anes_type_nm",
   "asa_rating_c",
-  
-  "patient_class_group",
-  
+  "patient_class_group"
+)
+
+
+# Lines and drains
+lda_features = c(
   "piv_line",
   "wound",
   "urinary_drainage",           
   "art_line",
   "airway",
   "cvc_line",
-  
   "drain",
   "wound_therapy",
   "picc_line",
-  
   "pressure_ulcer_injury",
   "line_type",
   "nasogastric_orogastric_tube",
-  
   "extravasation",
   "epidural_line",
   "intraosseous_line"
 )
-  
 
-independent_basic = c(
-  
-  "icu_admin_flag",
-  "age",
-  "height_cm",
-  "weight",
-  "sex",
-  
-  "primary_anes_type_nm",
-  "asa_rating_c",
-  
-  "patient_class_group"
-)
+# Medicines
+med_features = data_train %>% 
+  select(starts_with("med_")) %>% 
+  names()
+
+# Labs (any abnomality)
+lab_features_any = data_train %>% 
+  select(ends_with("_any")) %>% 
+  names()
+
+# Labs (extreme abnomality)
+lab_features_ext = data_train %>% 
+  select(ends_with("_ext")) %>% 
+  names()
+
+# Sets of explanatory variables
+independent_basic = basic_features
+independent_basic_lda = c(basic_features, lda_features)
+independent_basic_lda_med = c(basic_features, lda_features, med_features)
+independent_basic_lda_med_lab_any = c(basic_features, lda_features, med_features, lab_features_any)
+independent_basic_lda_med_lab_ext = c(basic_features, lda_features, med_features, lab_features_ext)
+
+
 ```
 
 Summary table:
 
 ```{r}
-
-data_train %>% summary_factorlist(dependent = dependent, explanatory = independent_all) %>% 
+data_train %>% summary_factorlist(dependent = dependent, explanatory = independent_basic_lda_med) %>% 
   mydt()
-#data_train %>% ff_glimpse()
 ```
 
 ## Fit lasso-regularized logistic regression model
 
-Logistic regression with only patient information explanatory variables:
+The following function is used to fit logistic regression models.
 
-```{r eval=F, warining = F, output = F}
+We model the following dependent variables:
 
-#test= sets_train %>% complete("all")
+- respitatory complications
 
-lasso_out_basic = sets_train %>%
+- Death
+
+- low SPO2 (intra-operative)
+
+- low SPO2 (post-operative)
+
+These are modeled on the following sets of independent variables:
+
+- Basic patient info (from "Patient Information")
+
+- Lines and drains (from "Patient LDA")
+
+- Medications (from "Patient Medications")
+
+- Labs (from "Patient Labs")
+
+
+```{r}
+# Function for fitting LR models
+
+fit_LR = function(dependent, independent){
+  
+  # For dynamically defining model formula
+  d  <- rlang::sym(dependent)
+  f <- as.formula(paste(d, " ~ ."))
+  
+  out = sets_train %>%   # Model fit on imputed training sets
   complete("all") %>% 
   map(function(.x){
     
     # Define X and y
     .x %>% 
-      #complete() %>% 
-      select(dependent, all_of(independent_basic)) %>% 
+      select(dependent, all_of(independent) ) %>% 
+      filter((asa_rating_c != 5) & (asa_rating_c != 6)) %>% 
       drop_na() %>% 
-      recipe(respiratory_comp ~ .) %>% 
+      recipes::recipe(
+        formula = f) %>% 
       step_normalize(all_numeric()) %>% 
-      step_dummy(all_nominal(), -respiratory_comp) %>%
+      step_dummy(all_nominal(), -!!sym(dependent)) %>%
       step_naomit(everything()) %>% 
       prep() %>% 
       juice() %T>%
-      {X <<- select(., -respiratory_comp) %>% as.matrix()} %>% 
-      {y <<- pull(., respiratory_comp) %>% as.numeric() %>% {. - 1}}
+      {X <<- select(., -!!sym(dependent)) %>% as.matrix()} %>% 
+      {y <<- pull(., !!sym(dependent)) %>% as.numeric() %>% {. - 1}}
     
     # Fit
     fits = glmnet(X, y, 
-                  family = "binomial", maxit = 2000, 
+                  family = "binomial", maxit = 4000, 
                   standardize = T)
     
     # K-fold CV, nfolds = 10
     cv.fits = cv.glmnet(X, y, standardize = TRUE,
-                        family = "binomial", maxit = 2000,
+                        family = "binomial", maxit = 4000,
                         type.measure = "auc")
     
+    # Optimal regularization strength
     #opt.lam = c(cv.fits$lambda.min, cv.fits$lambda.1se)
     opt.lam = cv.fits$lambda.min
     
@@ -165,80 +236,248 @@ lasso_out_basic = sets_train %>%
          "opt.lam" = opt.lam)
   }
   )
-
-#lasso_out_basic %>% 
-#  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic.rds")
-```
-
-```{r echo=F, output=F, warning=F}
-lasso_out_basic = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic.rds")
+  out
+}
 
 ```
 
-We also fit a model based on the patient info+LDA:
+Fit models for respiratory complications, death and SPO2 on various subsets of independent variables:
 
-```{r eval=F, echo=F, waring=F, output=F}
-
-lasso_out_all = sets_train %>%
-  complete("all") %>% 
-  map(function(.x){
-    
-    # Define X and y
-    .x %>%
-      select(dependent, all_of(independent_all)) %>% 
-      drop_na() %>% 
-      recipe(respiratory_comp ~ .) %>% 
-      step_normalize(all_numeric()) %>% 
-      step_dummy(all_nominal(), -respiratory_comp) %>%
-      step_naomit(everything()) %>% 
-      prep() %>% 
-      juice() %T>%
-      {X <<- select(., -respiratory_comp) %>% as.matrix()} %>% 
-      {y <<- pull(., respiratory_comp) %>% as.numeric() %>% {. - 1}}
-    
-    # Fit
-    fits = glmnet(X, y, 
-                  family = "binomial", maxit = 2000)
-    
-    # K-fold CV, nfolds = 10
-    cv.fits = cv.glmnet(X, y, standardize = T,
-                        family = "binomial", maxit = 2000,
-                        type.measure = "auc")
-    
-    opt.lam = cv.fits$lambda.min
-    
-
-    
-    list("fit" = fits, 
-         "cv" = cv.fits, 
-         "opt.lam" = opt.lam)
-  }
-  )
-
-#lasso_out_all %>% 
-#  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_all.rds")
-```
-
-```{r echo=F, output=F, warning=F}
-lasso_out_all = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_all.rds")
-```
-
-The cross-validated performance per regularization strength for the patient info model (only three variables used at peak performance):
-
-```{r}
-lasso_out_basic[[1]]$cv %>% plot()
-```
-
-The cross-validated performance per regularization strength for the patient info_LDA model:
-
-```{r}
-lasso_out_all[[1]]$cv %>% plot()
-```
-
-The model based only on patient info uses only weight, asa ratng, and the indicator of ICU admission at optimal regularization strength (showing all variables that have non-zero coefficents in more than half of mice imputation replicates):
-
-```{r}
+```{r eval=FALSE, echo=TRUE}
+# models predicting respiratory complications
+#---------------------------------------------
+lasso_out_basic = fit_LR("respiratory_comp", independent_basic)
 lasso_out_basic %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic.rds")
+
+lasso_out_basic_lda = fit_LR("respiratory_comp", independent_basic_lda)
+lasso_out_basic_lda %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda.rds")
+
+lasso_out_basic_lda_med = fit_LR("respiratory_comp", independent_basic_lda_med)
+lasso_out_basic_lda_med %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med.rds")
+
+lasso_out_basic_lda_med_lab_any = fit_LR("respiratory_comp", independent_basic_lda_med_lab_any)
+lasso_out_basic_lda_med_lab_any %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_any.rds")
+
+lasso_out_basic_lda_med_lab_ext = fit_LR("respiratory_comp", independent_basic_lda_med_lab_ext)
+lasso_out_basic_lda_med_lab_ext %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_ext.rds")
+
+
+# Models of death
+#----------------
+lasso_out_basic = fit_LR("death", independent_basic)
+lasso_out_basic %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_death.rds")
+
+lasso_out_basic_lda = fit_LR("death", independent_basic_lda)
+lasso_out_basic_lda %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_death.rds")
+
+lasso_out_basic_lda_med = fit_LR("death", independent_basic_lda_med)
+lasso_out_basic_lda_med %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_death.rds")
+
+lasso_out_basic_lda_med_lab_any = fit_LR("death", independent_basic_lda_med_lab_any)
+lasso_out_basic_lda_med_lab_any %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_any_death.rds")
+
+lasso_out_basic_lda_med_lab_ext = fit_LR("death", independent_basic_lda_med_lab_ext)
+lasso_out_basic_lda_med_lab_ext %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_ext_death.rds")
+
+
+
+#models of sp02
+#--------------
+
+lasso_out_basic = fit_LR("spo2_intra90", independent_basic)
+lasso_out_basic %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_spo2.rds")
+
+lasso_out_basic_lda = fit_LR("spo2_intra90", independent_basic_lda)
+lasso_out_basic_lda %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_spo2.rds")
+
+lasso_out_basic_lda_med = fit_LR("spo2_intra90", independent_basic_lda_med)
+lasso_out_basic_lda_med %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_spo2.rds")
+
+lasso_out_basic_lda_med_lab_any = fit_LR("spo2_intra90", independent_basic_lda_med_lab_any)
+lasso_out_basic_lda_med_lab_any %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_any_spo2.rds")
+
+lasso_out_basic_lda_med_lab_ext = fit_LR("spo2_intra90", independent_basic_lda_med_lab_ext)
+lasso_out_basic_lda_med_lab_ext %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_ext_spo2.rds")
+
+
+#models of sp02 post
+#-------------------
+
+lasso_out_basic = fit_LR("spo2_post90", independent_basic)
+lasso_out_basic %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_spo2_post.rds")
+
+lasso_out_basic_lda = fit_LR("spo2_post90", independent_basic_lda)
+lasso_out_basic_lda %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_spo2_post.rds")
+
+lasso_out_basic_lda_med = fit_LR("spo2_post90", independent_basic_lda_med)
+lasso_out_basic_lda_med %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_spo2_post.rds")
+
+lasso_out_basic_lda_med_lab_any = fit_LR("spo2_post90", independent_basic_lda_med_lab_any)
+lasso_out_basic_lda_med_lab_any %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_any_spo2_post.rds")
+
+lasso_out_basic_lda_med_lab_ext = fit_LR("spo2_post90", independent_basic_lda_med_lab_ext)
+lasso_out_basic_lda_med_lab_ext %>% 
+  write_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_ext_spo2_post.rds")
+```
+
+```{r echo=FALSE}
+# Read fitted models
+
+# models predicting respiratory complications
+#--------------------------------------------
+lasso_out_basic_rc = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic.rds")
+lasso_out_basic_lda_rc = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda.rds")
+lasso_out_basic_lda_med_rc = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med.rds")
+lasso_out_basic_lda_med_lab_any_rc = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_any.rds")
+lasso_out_basic_lda_med_lab_ext_rc = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_ext.rds")
+
+
+# Models of death
+#----------------
+lasso_out_basic_death = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_death.rds")
+lasso_out_basic_lda_death = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_death.rds")
+lasso_out_basic_lda_med_death = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_death.rds")
+lasso_out_basic_lda_med_lab_any_death = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_any_death.rds")
+lasso_out_basic_lda_med_lab_ext_death = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_ext_death.rds")
+
+
+
+#models of sp02
+#--------------
+lasso_out_basic_spo2 = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_spo2.rds")
+lasso_out_basic_lda_spo2 = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_spo2.rds")
+lasso_out_basic_lda_med_spo2 = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_spo2.rds")
+lasso_out_basic_lda_med_lab_any_spo2 = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_any_spo2.rds")
+lasso_out_basic_lda_med_lab_ext_spo2 = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_ext_spo2.rds")
+
+
+#models of sp02 post
+#-------------------
+lasso_out_basic_spo2p = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_spo2_post.rds")
+lasso_out_basic_lda_spo2p = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_spo2_post.rds")
+lasso_out_basic_lda_med_spo2p = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_spo2_post.rds")
+lasso_out_basic_lda_med_lab_any_spo2p = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_any_spo2_post.rds")
+lasso_out_basic_lda_med_lab_ext_spo2p = read_rds("/home/common/mover_data/results/baseline_model/lasso_out_basic_lda_med_lab_ext_spo2_post.rds")
+```
+
+# The cross-validated performance per regularization strength
+
+## Respiratory complications
+
+```{r echo = FALSE}
+lasso_out_basic_rc[[1]]$cv %>% plot(sub="Basic patient information model")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_rc[[1]]$cv %>% plot(sub = "basic+LDA")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_med_rc[[1]]$cv %>% plot(sub = "basic+LDA+meds")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_med_lab_any_rc[[1]]$cv %>% plot(sub = "basic+LDA+meds+labs (any abnormal)")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_med_lab_any_rc[[1]]$cv %>% plot(sub = "basic+LDA+meds+labs (extreme abnormal)")
+```
+
+## Death
+
+```{r echo = FALSE}
+lasso_out_basic_death[[1]]$cv %>% plot(sub="Basic patient information model")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_death[[1]]$cv %>% plot(sub = "basic+LDA")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_med_death[[1]]$cv %>% plot(sub = "basic+LDA+meds")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_med_lab_any_death[[1]]$cv %>% plot(sub = "basic+LDA+meds+labs (any abnormal)")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_med_lab_any_death[[1]]$cv %>% plot(sub = "basic+LDA+meds+labs (extreme abnormal)")
+```
+
+## SPO2 (intra-op)
+
+```{r echo = FALSE}
+lasso_out_basic_spo2[[1]]$cv %>% plot(sub="Basic patient information model")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_spo2[[1]]$cv %>% plot(sub = "basic+LDA")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_med_spo2[[1]]$cv %>% plot(sub = "basic+LDA+meds")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_med_lab_any_spo2[[1]]$cv %>% plot(sub = "basic+LDA+meds+labs (any abnormal)")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_med_lab_any_spo2[[1]]$cv %>% plot(sub = "basic+LDA+meds+labs (extreme abnormal)")
+```
+
+## SPO2 (post-op)
+
+```{r echo = FALSE}
+lasso_out_basic_spo2p[[1]]$cv %>% plot(sub="Basic patient information model")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_spo2p[[1]]$cv %>% plot(sub = "basic+LDA")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_med_spo2p[[1]]$cv %>% plot(sub = "basic+LDA+meds")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_med_lab_any_spo2p[[1]]$cv %>% plot(sub = "basic+LDA+meds+labs (any abnormal)")
+```
+
+```{r echo = FALSE}
+lasso_out_basic_lda_med_lab_any_spo2p[[1]]$cv %>% plot(sub = "basic+LDA+meds+labs (extreme abnormal)")
+```
+
+# Retained variables
+
+Here we show the independent variables that would be selected by majority rule by the lasso. We show only the basic+lda_med+labs(any) models for each dependent variable (respiratory complications, death, SPO2 (intra and post op)).
+
+## Respiratory complications
+
+```{r}
+
+lasso_out_basic_lda_med_lab_any_rc %>% 
   map(function(fit){
     fit$fit %>% 
       coef(s=fit$opt.lam) %>% 
@@ -255,13 +494,15 @@ lasso_out_basic %>%
   mutate(pooled_coef = mean(c_across(-all_of(c("row_names")) ))) %>% 
   select(row_names, pooled_coef) %>% 
   arrange(pooled_coef) %>% 
+  mutate(row_names = lab_name_map(row_names)) %>% 
+  dplyr::rename("variable" = "row_names") %>% 
   mydt()
 ```
 
-The model that also includes LDA uses the following variables at optimal regularization strength (again, showing all variables that have non-zero coefficents in more than half of mice imputation replicates):
+## Death
 
 ```{r}
-lasso_out_all %>% 
+lasso_out_basic_lda_med_lab_any_death %>% 
   map(function(fit){
     fit$fit %>% 
       coef(s=fit$opt.lam) %>% 
@@ -275,9 +516,61 @@ lasso_out_all %>%
   filter(frac_zero<0.5) %>% 
   select(-frac_zero) %>% 
   rowwise() %>%
-  mutate(pooled_coef = mean(c_across(-row_names ) )) %>% 
+  mutate(pooled_coef = mean(c_across(-all_of(c("row_names")) ))) %>% 
   select(row_names, pooled_coef) %>% 
   arrange(pooled_coef) %>% 
+  mutate(row_names = lab_name_map(row_names)) %>% 
+  dplyr::rename("variable" = "row_names") %>% 
+  mydt()
+```
+
+## SPO2 (intra-op)
+
+```{r}
+lasso_out_basic_lda_med_lab_any_spo2 %>% 
+  map(function(fit){
+    fit$fit %>% 
+      coef(s=fit$opt.lam) %>% 
+      as.matrix() %>% 
+      as.data.frame()
+  }) %>% 
+  bind_cols() %>%
+  rownames_to_column("row_names") %>% 
+  rowwise() %>%
+  mutate(frac_zero = sum(c_across(-row_names ) == 0)/(ncol(.)-1) ) %>% 
+  filter(frac_zero<0.5) %>% 
+  select(-frac_zero) %>% 
+  rowwise() %>%
+  mutate(pooled_coef = mean(c_across(-all_of(c("row_names")) ))) %>% 
+  select(row_names, pooled_coef) %>% 
+  arrange(pooled_coef) %>% 
+  mutate(row_names = lab_name_map(row_names)) %>% 
+  dplyr::rename("variable" = "row_names") %>% 
+  mydt()
+```
+
+## SPO2 (post-op)
+
+```{r}
+lasso_out_basic_lda_med_lab_any_spo2p %>% 
+  map(function(fit){
+    fit$fit %>% 
+      coef(s=fit$opt.lam) %>% 
+      as.matrix() %>% 
+      as.data.frame()
+  }) %>% 
+  bind_cols() %>%
+  rownames_to_column("row_names") %>% 
+  rowwise() %>%
+  mutate(frac_zero = sum(c_across(-row_names ) == 0)/(ncol(.)-1) ) %>% 
+  filter(frac_zero<0.5) %>% 
+  select(-frac_zero) %>% 
+  rowwise() %>%
+  mutate(pooled_coef = mean(c_across(-all_of(c("row_names")) ))) %>% 
+  select(row_names, pooled_coef) %>% 
+  arrange(pooled_coef) %>% 
+  mutate(row_names = lab_name_map(row_names)) %>% 
+  dplyr::rename("variable" = "row_names") %>% 
   mydt()
 ```
 
@@ -285,275 +578,695 @@ lasso_out_all %>%
 
 Make predictions based on patient information only model:
 
-```{r output+F, warning=F}
+```{r}
+# A function to make predictions given a model and a test set
 
-pred_basic = map2(lasso_out_basic, sets_test %>% complete("all"),
+make_predictions = function(lasso_models, test_data, dependent, independent){
+  
+  d  <- rlang::sym(dependent)
+  f <- as.formula(paste(d, " ~ ."))
+  
+  pred = map2(lasso_models, test_data ,
                   function(lasso, X_in){
+                    
+                    vars = lasso$fit$beta %>% row.names()
+                    
                     X = X_in %>% 
-                      select(dependent, all_of(independent_basic)) %>%
+                      select(dependent, all_of(independent)) %>%
                       drop_na() %>% 
-                      recipe(respiratory_comp ~ .) %>% 
+                      #recipe(!!sym(dependent) ~ .) %>% 
+                      recipes::recipe(
+                        formula = f) %>% 
                       step_normalize(all_numeric()) %>% 
-                      step_dummy(all_nominal(), -respiratory_comp) %>%
+                      step_dummy(all_nominal(), -!!sym(dependent)) %>%
                       step_naomit(everything()) %>% 
                       prep() %>% 
                       juice() %>%
-                      mutate(y = respiratory_comp %>%  as.numeric() %>% {. - 1}) %>%
-                      select(., -respiratory_comp) %>% 
-                      as.matrix()
+                      mutate(y = !!sym(dependent) %>%  as.numeric() %>% {. - 1}) %>%
+                      select(., -!!sym(dependent)) #%>%
+                      #select(all_of(vars)) %>% 
+                      #as.matrix()
 
+                    #print(paste("vars = ", vars))
+                    #print(paste("col.names = ", X %>% names()))
+                    #print(paste( "dim = ", X %>% dim()))
+                    
                     pred = predict(
                       lasso$fit,
-                      X,
+                      X %>% select(all_of(vars)) %>% as.matrix(),
                       s = lasso$opt.lam,
                       type = "response",  #c("link", "response", "coefficients", "nonzero")
                       )
                  
                     out = bind_cols(pred, X %>% 
-                                      as.data.frame() %>% 
+                                      #as.data.frame() %>% 
                                       select(y)) %>% 
                       dplyr::rename("prediction" = "s1", "truth" = "y") %>% 
                       mutate(truth = factor(truth))
                   })
+
+  pred
+  }
 ```
-
-Make predictions based on patient information + LDA model:
-
-```{r warining=F, output=F}
-pred_all = map2(lasso_out_all, sets_test %>% complete("all"),
-                  function(lasso, X_in){
-                    X = X_in %>% 
-                      select(dependent, all_of(independent_all)) %>%
-                      drop_na() %>% 
-                      recipe(respiratory_comp ~ .) %>% 
-                      step_normalize(all_numeric()) %>% 
-                      step_dummy(all_nominal(), -respiratory_comp) %>%
-                      step_naomit(everything()) %>% 
-                      prep() %>% 
-                      juice() %>%
-                      mutate(y = respiratory_comp %>%  as.numeric() %>% {. - 1}) %>%
-                      select(., -respiratory_comp) %>% 
-                      as.matrix()
-
-                    pred = predict(
-                      lasso$fit,
-                      X,
-                      s = lasso$opt.lam,
-                      type = "response",  #c("link", "response", "coefficients", "nonzero")
-                      )
-                 
-                    out = bind_cols(pred, X %>% 
-                                      as.data.frame() %>% 
-                                      select(y)) %>% 
-                      dplyr::rename("prediction" = "s1", "truth" = "y") %>% 
-                      mutate(truth = factor(truth))
-                  })
-```
-
-
-Confusion:
 
 ```{r}
-thresh = 0.005
+# Predictions for respiritory complications
+pred_basic_rc = make_predictions(lasso_out_basic_rc, 
+                              sets_test%>% complete("all"), 
+                              "respiratory_comp", 
+                              independent_basic)
 
-pred_basic[[1]] %>% 
-  mutate(TP = case_when(
-    (prediction > thresh) & (truth == 1) ~ 1,
-    TRUE ~ 0)) %>% 
-  mutate(FP = case_when(
-    (prediction > thresh) & (truth == 0) ~ 1,
-    TRUE ~ 0)) %>% 
-  mutate(TN = case_when(
-    (prediction <= thresh) & (truth == 0) ~ 1,
-    TRUE ~ 0)) %>% 
-  mutate(FN = case_when(
-    (prediction < thresh) & (truth == 1) ~ 1,
-    TRUE ~ 0)) %>% 
-  select(all_of(c("TP", "FP", "TN", "FN"))) %>% 
-  colSums()
+pred_basic_lda_rc = make_predictions(lasso_out_basic_lda_rc, 
+                              sets_test%>% complete("all"), 
+                              "respiratory_comp", 
+                              independent_basic_lda)
+
+pred_basic_lda_med_rc = make_predictions(lasso_out_basic_lda_med_rc, 
+                              sets_test%>% complete("all"), 
+                              "respiratory_comp", 
+                              independent_basic_lda_med)
+
+pred_basic_lda_med_lab_any_rc = make_predictions(lasso_out_basic_lda_med_lab_any_rc, 
+                              sets_test%>% complete("all"), 
+                              "respiratory_comp", 
+                              independent_basic_lda_med_lab_any)
+
+pred_basic_lda_med_lab_ext_rc = make_predictions(lasso_out_basic_lda_med_lab_ext_rc, 
+                              sets_test%>% complete("all"), 
+                              "respiratory_comp", 
+                              independent_basic_lda_med_lab_ext)
+
+#lasso_out_basic_lda_med_lab_ext = fit_LR("death", independent_basic_lda_med_lab_ext)
+
+
+# Mortality predictions
+
+pred_basic_death = make_predictions(lasso_out_basic_death, 
+                              sets_test%>% complete("all"), 
+                              "death", 
+                              independent_basic)
+
+pred_basic_lda_death = make_predictions(lasso_out_basic_lda_death, 
+                              sets_test%>% complete("all"), 
+                              "death", 
+                              independent_basic_lda)
+
+pred_basic_lda_med_death = make_predictions(lasso_out_basic_lda_med_death, 
+                              sets_test%>% complete("all"), 
+                              "death", 
+                              independent_basic_lda_med)
+
+pred_basic_lda_med_lab_any_death = make_predictions(lasso_out_basic_lda_med_lab_any_death, 
+                              sets_test%>% complete("all"), 
+                              "death", 
+                              independent_basic_lda_med_lab_any)
+
+pred_basic_lda_med_lab_ext_death = make_predictions(lasso_out_basic_lda_med_lab_ext_death, 
+                              sets_test%>% complete("all"), 
+                              "death", 
+                              independent_basic_lda_med_lab_ext)
+
+#SPO2
+pred_basic_spo2 = make_predictions(lasso_out_basic_spo2, 
+                              sets_test%>% complete("all"), 
+                              "spo2_intra90", 
+                              independent_basic)
+
+pred_basic_lda_spo2 = make_predictions(lasso_out_basic_lda_spo2, 
+                              sets_test%>% complete("all"), 
+                              "spo2_intra90", 
+                              independent_basic_lda)
+
+pred_basic_lda_med_spo2 = make_predictions(lasso_out_basic_lda_med_spo2, 
+                              sets_test%>% complete("all"), 
+                              "spo2_intra90", 
+                              independent_basic_lda_med)
+
+pred_basic_lda_med_lab_any_spo2 = make_predictions(lasso_out_basic_lda_med_lab_any_spo2, 
+                              sets_test%>% complete("all"), 
+                              "spo2_intra90", 
+                              independent_basic_lda_med_lab_any)
+
+pred_basic_lda_med_lab_ext_spo2 = make_predictions(lasso_out_basic_lda_med_lab_ext_spo2, 
+                              sets_test%>% complete("all"), 
+                              "spo2_intra90", 
+                              independent_basic_lda_med_lab_ext)
+
+
+
+
+#SPO2 post-op
+pred_basic_spo2p = make_predictions(lasso_out_basic_spo2p, 
+                              sets_test%>% complete("all"), 
+                              "spo2_post90", 
+                              independent_basic)
+
+pred_basic_lda_spo2p = make_predictions(lasso_out_basic_lda_spo2p, 
+                              sets_test%>% complete("all"), 
+                              "spo2_post90", 
+                              independent_basic_lda)
+
+pred_basic_lda_med_spo2p = make_predictions(lasso_out_basic_lda_med_spo2p, 
+                              sets_test%>% complete("all"), 
+                              "spo2_post90", 
+                              independent_basic_lda_med)
+
+pred_basic_lda_med_lab_any_spo2p = make_predictions(lasso_out_basic_lda_med_lab_any_spo2p, 
+                              sets_test%>% complete("all"), 
+                              "spo2_post90", 
+                              independent_basic_lda_med_lab_any)
+
+pred_basic_lda_med_lab_ext_spo2p = make_predictions(lasso_out_basic_lda_med_lab_ext_spo2p, 
+                              sets_test%>% complete("all"), 
+                              "spo2_post90", 
+                              independent_basic_lda_med_lab_ext)
+```
+
+Evaluate model perpormance on the held-out test set:
+
+```{r}
+# A function to evaluate model performance
+
+eval_performance = function(predictions){
   
-```
-
-
-Calculate ROC curves and AUC
-
-```{r warning=F, output=F}
-
-# ROC curves
-roc_curves_basic = map2(pred_basic, seq(length(pred_basic)), 
-                        function(pred, i){
-    r = roc_curve(pred, truth, prediction, event_level = "second")
-    r = r %>% 
-      mutate(mice_set = i)
-  }) %>% 
-  bind_rows()
-
-# PR curves
-pr_curves_basic = map2(pred_basic, seq(length(pred_basic)), 
-                        function(pred, i){
-    r = pr_curve(pred, truth, prediction, event_level = "second")
-    r = r %>% 
-      mutate(mice_set = i)
-  }) %>% 
-  bind_rows()
-
-# AUC
-auc_basic = map2(pred_basic, seq(length(pred_basic)), 
-                        function(pred, i){
-                          
-    r = pROC::roc(pred$truth, pred$prediction)
-    auc_int = pROC::ci.auc(r)
-    auc_est = pROC::auc(r)
+  
+  
+  # ROC curves
+  roc_curves = map2(predictions, seq(length(predictions)), 
+                    function(pred, i){
+                      r = roc_curve(pred, truth, prediction, event_level = "second")
+                      r = r %>% 
+                        mutate(mice_set = i)
+                      }) %>% 
+    bind_rows()
+  
+  # PR curves
+  pr_curves = map2(predictions, seq(length(predictions)), 
+                         function(pred, i){
+                           r = pr_curve(pred, truth, prediction, event_level = "second")
+                           r = r %>% 
+                             mutate(mice_set = i)
+                           }) %>% 
+    bind_rows()
+  
+  # AUC
+  auc = map2(predictions, seq(length(predictions)), 
+                   function(pred, i){
+                     r = pROC::roc(pred$truth, pred$prediction)
+                     auc_int = pROC::ci.auc(r)
+                     auc_est = pROC::auc(r)
     
 #    r2 = roc_curve(pred_basic[[1]], truth, prediction, event_level = "second")
-    auc = roc_auc(pred, truth, prediction, event_level = "second")
-    
-    auc = auc %>% mutate(auc_lower = auc_int[[1]],
+                     auc = roc_auc(pred, truth, prediction, event_level = "second")
+                     
+                     auc = auc %>% mutate(auc_lower = auc_int[[1]],
                      auc_upper = auc_int[[3]],
                      auc_alt = auc_est[[1]],
                      auc_se = (auc_int[[3]]-auc_int[[1]])/3.92
-    ) %>% 
-      mutate(mice_set = i)
-  }) %>% 
-  bind_rows()
+                     ) %>% 
+                       mutate(mice_set = i)
+                     }) %>% 
+    bind_rows()
+  
+  # PRAUC
+  auprc = map2(predictions, seq(length(predictions)), 
+                     function(pred, i){
+                       auc = pr_auc(pred, truth, prediction, event_level = "second") %>% 
+                         mutate(mice_set = i)
+                       }) %>% 
+    bind_rows()
 
-# PRAUC
-auprc_basic = map2(pred_basic, seq(length(pred_basic)), 
-                        function(pred, i){
-                          
+  # Pooled AUC
+  # Usin Rubin's rules to pool the AUC estimate and SE
 
-    auc = pr_auc(pred, truth, prediction, event_level = "second") %>% 
-      mutate(mice_set = i)
-  }) %>% 
-  bind_rows()
+  pooled_estimate = auc$.estimate %>% mean()
+  var_within = auc$auc_se %>% mean()
+  var_between = auc$.estimate %>% var()
+  pooled_se = var_within+var_between*(1+1/nrow(auc))
+  pooled_ci = pooled_se*3.92/2.
+  pooled_auc = data.frame("pooled_estimate" = pooled_estimate,
+                                "pooled_lower" = pooled_estimate-pooled_ci,
+                                "pooled_upper" = pooled_estimate+pooled_ci,
+                                "pooled_se" = pooled_se)
 
-# Pooled AUC
-# Usin Rubin's rules to pool the AUC estimate and SE
+  # Pooled AUPRC
 
-pooled_estimate = auc_basic$.estimate %>% mean()
-var_within = auc_basic$auc_se %>% mean()
-var_between = auc_basic$.estimate %>% var()
-pooled_se = var_within+var_between*(1+1/nrow(auc_basic))
-pooled_ci = pooled_se*3.92/2.
-pooled_auc_basic = data.frame("pooled_estimate" = pooled_estimate,
-                              "pooled_lower" = pooled_estimate-pooled_ci,
-                              "pooled_upper" = pooled_estimate+pooled_ci,
-                              "pooled_se" = pooled_se)
+  pooled_prauc = auprc$.estimate %>% mean()
+  
+  
+  # collect results
+  
+  out = list(
+    "roc_curves" = roc_curves,
+    "pr_curves" = pr_curves,
+    "auc" = auc,
+    "auprc" = auprc,
+    "pooled_auc" = pooled_auc,
+    "pooled_prauc" = pooled_prauc
+  )
+  
+}
 
-# Pooled AUPRC
-
-pooled_prauc_basic = auprc_basic$.estimate %>% mean()
 ```
 
-```{r warning=F, echo=F, error=F}
+```{r output=FALSE}
+# Evaluate performance
 
-roc_curves_all = map2(pred_all, seq(length(pred_all)), 
-                        function(pred, i){
-    r = roc_curve(pred, truth, prediction, event_level = "second")
-    r = r %>% 
-      mutate(mice_set = i)
-  }) %>% 
-  bind_rows()
-
-pr_curves_all = map2(pred_all, seq(length(pred_all)), 
-                        function(pred, i){
-    r = pr_curve(pred, truth, prediction, event_level = "second")
-    r = r %>% 
-      mutate(mice_set = i)
-  }) %>% 
-  bind_rows()
+eval_basic_rc = eval_performance(pred_basic_rc)
+eval_basic_lda_rc = eval_performance(pred_basic_lda_rc)
+eval_basic_lda_med_rc = eval_performance(pred_basic_lda_med_rc)
+eval_basic_lda_med_lab_any_rc = eval_performance(pred_basic_lda_med_lab_any_rc)
+eval_basic_lda_med_lab_ext_rc = eval_performance(pred_basic_lda_med_lab_ext_rc)
 
 
-auc_all = map2(pred_all, seq(length(pred_all)), 
-                        function(pred, i){
-                          
-    r = pROC::roc(pred$truth, pred$prediction)
-    auc_int = pROC::ci.auc(r)
-    auc_est = pROC::auc(r)
-    
-#    r2 = roc_curve(pred_basic[[1]], truth, prediction, event_level = "second")
-    auc = roc_auc(pred, truth, prediction, event_level = "second")
-    
-    auc = auc %>% mutate(auc_lower = auc_int[[1]],
-                     auc_upper = auc_int[[3]],
-                     auc_alt = auc_est[[1]],
-                     auc_se = (auc_int[[3]]-auc_int[[1]])/3.92
-    ) %>% 
-      mutate(mice_set = i)
-  }) %>% 
-  bind_rows()
+# Mortality 
+
+eval_basic_death = eval_performance(pred_basic_death)
+eval_basic_lda_death = eval_performance(pred_basic_lda_death)
+eval_basic_lda_med_death = eval_performance(pred_basic_lda_med_death) 
+eval_basic_lda_med_lab_any_death = eval_performance(pred_basic_lda_med_lab_any_death)  
+eval_basic_lda_med_lab_ext_death = eval_performance(pred_basic_lda_med_lab_ext_death)
+  
+  
+#SPO2
+eval_basic_spo2 = eval_performance(pred_basic_spo2)
+eval_basic_lda_spo2 = eval_performance(pred_basic_lda_spo2)
+eval_basic_lda_med_spo2 = eval_performance(pred_basic_lda_med_spo2)
+eval_basic_lda_med_lab_any_spo2 = eval_performance(pred_basic_lda_med_lab_any_spo2)
+eval_basic_lda_med_lab_ext_spo2 = eval_performance(pred_basic_lda_med_lab_ext_spo2)
 
 
 
-auprc_all = map2(pred_all, seq(length(pred_all)), 
-                        function(pred, i){
-                          
-
-    auc = pr_auc(pred, truth, prediction, event_level = "second") %>% 
-      mutate(mice_set = i)
-  }) %>% 
-  bind_rows()
-
-
-# Pooled AUC
-# Usin Rubin's rules to pool the AUC estimate and SE
-
-pooled_estimate = auc_all$.estimate %>% mean()
-var_within = auc_all$auc_se %>% mean()
-var_between = auc_all$.estimate %>% var()
-pooled_se = var_within+var_between*(1+1/nrow(auc_all))
-pooled_ci = pooled_se*3.92/2.
-pooled_auc_all = data.frame("pooled_estimate" = pooled_estimate,
-                              "pooled_lower" = pooled_estimate-pooled_ci,
-                              "pooled_upper" = pooled_estimate+pooled_ci,
-                              "pooled_se" = pooled_se)
-
-# Pooled AUPRC
-
-pooled_prauc_all = auprc_all$.estimate %>% mean()
+#SPO2 post-op
+eval_basic_spo2p = eval_performance(pred_basic_spo2p)
+eval_basic_lda_spo2p = eval_performance(pred_basic_lda_spo2p)
+eval_basic_lda_med_spo2p = eval_performance(pred_basic_lda_med_spo2p)
+eval_basic_lda_med_lab_any_spo2p = eval_performance(pred_basic_lda_med_lab_any_spo2p)
+eval_basic_lda_med_lab_ext_spo2p = eval_performance(pred_basic_lda_med_lab_ext_spo2p)
 ```
 
 ## ROC curves
 
-```{r}
+```{r echo = F}
 bind_rows(
-  roc_curves_basic %>% mutate(explanatory = "info"),
-  roc_curves_all %>% mutate(explanatory = "info+LDA")
+  eval_basic_rc$roc_curves %>% mutate(explanatory = "info"),
+  eval_basic_lda_rc$roc_curves %>% mutate(explanatory = "info+LDA"),
+  eval_basic_lda_med_rc$roc_curves %>% mutate(explanatory = "info+LDA+medicines"),
+  eval_basic_lda_med_lab_any_rc$roc_curves %>% mutate(explanatory = "info+LDA+medicines+labs(any)"),
+  eval_basic_lda_med_lab_ext_rc$roc_curves %>% mutate(explanatory = "info+LDA+medicines+labs(ext)")
 ) %>% 
   #filter(mice_set == 1 | mice_set == 2) %>% 
   ggplot(aes(x = 1-specificity, y=sensitivity, group = mice_set, color = explanatory))+
   geom_path( linewidth = 0.2)+
-  geom_abline(linetype=3)
+  geom_abline(linetype=3)+
+  ggtitle("respiratory complications")
 ```
 
-The pooled AUC
-
-```{r}
+```{r echo = F}
 bind_rows(
-  pooled_auc_basic %>% mutate(explanatory = "info"),
-  pooled_auc_all %>% mutate(explanatory = "info+LDA")) %>% 
+  eval_basic_death$roc_curves %>% mutate(explanatory = "info"),
+  eval_basic_lda_death$roc_curves %>% mutate(explanatory = "info+LDA"),
+  eval_basic_lda_med_death$roc_curves %>% mutate(explanatory = "info+LDA+medicines"),
+  eval_basic_lda_med_lab_any_death$roc_curves %>% mutate(explanatory = "info+LDA+medicines+labs(any)"),
+  eval_basic_lda_med_lab_ext_death$roc_curves %>% mutate(explanatory = "info+LDA+medicines+labs(ext)")
+) %>% 
+  #filter(mice_set == 1 | mice_set == 2) %>% 
+  ggplot(aes(x = 1-specificity, y=sensitivity, group = mice_set, color = explanatory))+
+  geom_path( linewidth = 0.2)+
+  geom_abline(linetype=3)+
+  ggtitle("Death")
+```
+
+```{r echo = F}
+bind_rows(
+  eval_basic_spo2$roc_curves %>% mutate(explanatory = "info"),
+  eval_basic_lda_spo2$roc_curves %>% mutate(explanatory = "info+LDA"),
+  eval_basic_lda_med_spo2$roc_curves %>% mutate(explanatory = "info+LDA+medicines"),
+  eval_basic_lda_med_lab_any_spo2$roc_curves %>% mutate(explanatory = "info+LDA+medicines+labs(any)"),
+  eval_basic_lda_med_lab_ext_spo2$roc_curves %>% mutate(explanatory = "info+LDA+medicines+labs(ext)")
+) %>% 
+  #filter(mice_set == 1 | mice_set == 2) %>% 
+  ggplot(aes(x = 1-specificity, y=sensitivity, group = mice_set, color = explanatory))+
+  geom_path( linewidth = 0.2)+
+  geom_abline(linetype=3)+
+  ggtitle("SPO2")
+```
+
+```{r echo = F}
+bind_rows(
+  eval_basic_spo2p$roc_curves %>% mutate(explanatory = "info"),
+  eval_basic_lda_spo2p$roc_curves %>% mutate(explanatory = "info+LDA"),
+  eval_basic_lda_med_spo2p$roc_curves %>% mutate(explanatory = "info+LDA+medicines"),
+  eval_basic_lda_med_lab_any_spo2p$roc_curves %>% mutate(explanatory = "info+LDA+medicines+labs(any)"),
+  eval_basic_lda_med_lab_ext_spo2p$roc_curves %>% mutate(explanatory = "info+LDA+medicines+labs(ext)")
+) %>% 
+  #filter(mice_set == 1 | mice_set == 2) %>% 
+  ggplot(aes(x = 1-specificity, y=sensitivity, group = mice_set, color = explanatory))+
+  geom_path( linewidth = 0.2)+
+  geom_abline(linetype=3)+
+  ggtitle("SPO2 (post-op)")
+```
+
+## Pooled AUC
+
+### Respiratory complications
+
+```{r echo = F}
+bind_rows(
+  eval_basic_rc$pooled_auc %>% mutate(explanatory = "info"),
+  eval_basic_lda_rc$pooled_auc %>% mutate(explanatory = "info+LDA"),
+  eval_basic_lda_med_rc$pooled_auc %>% mutate(explanatory = "info+LDA+medicines"), 
+  eval_basic_lda_med_lab_any_rc$pooled_auc %>% mutate(explanatory = "info+LDA+medicines+labs(any)"),
+  eval_basic_lda_med_lab_ext_rc$pooled_auc %>% mutate(explanatory = "info+LDA+medicines+labs(ext)")) %>% 
   select(explanatory, pooled_estimate, pooled_lower, pooled_upper) %>% 
   mutate(pooled_estimate = round(pooled_estimate, 3)) %>% 
   mutate(pooled_lower = round(pooled_lower, 3)) %>% 
-  mutate(pooled_estimate = round(pooled_estimate, 3)) 
+  mutate(pooled_estimate = round(pooled_estimate, 3)) %>% 
+  mydt()
+
+```
+
+### Death
+
+```{r echo = F}
+bind_rows(
+  eval_basic_death$pooled_auc %>% mutate(explanatory = "info"),
+  eval_basic_lda_death$pooled_auc %>% mutate(explanatory = "info+LDA"),
+  eval_basic_lda_med_death$pooled_auc %>% mutate(explanatory = "info+LDA+medicines"), 
+  eval_basic_lda_med_lab_any_death$pooled_auc %>% mutate(explanatory = "info+LDA+medicines+labs(any)"),
+  eval_basic_lda_med_lab_ext_death$pooled_auc %>% mutate(explanatory = "info+LDA+medicines+labs(ext)")) %>% 
+  select(explanatory, pooled_estimate, pooled_lower, pooled_upper) %>% 
+  mutate(pooled_estimate = round(pooled_estimate, 3)) %>% 
+  mutate(pooled_lower = round(pooled_lower, 3)) %>% 
+  mutate(pooled_estimate = round(pooled_estimate, 3)) %>% 
+  mydt() 
+```
+
+### SPO2
+
+```{r echo = F}
+bind_rows(
+  eval_basic_spo2$pooled_auc %>% mutate(explanatory = "info"),
+  eval_basic_lda_spo2$pooled_auc %>% mutate(explanatory = "info+LDA"),
+  eval_basic_lda_med_spo2$pooled_auc %>% mutate(explanatory = "info+LDA+medicines"), 
+  eval_basic_lda_med_lab_any_spo2$pooled_auc %>% mutate(explanatory = "info+LDA+medicines+labs(any)"),
+  eval_basic_lda_med_lab_ext_spo2$pooled_auc %>% mutate(explanatory = "info+LDA+medicines+labs(ext)")) %>% 
+  select(explanatory, pooled_estimate, pooled_lower, pooled_upper) %>% 
+  mutate(pooled_estimate = round(pooled_estimate, 3)) %>% 
+  mutate(pooled_lower = round(pooled_lower, 3)) %>% 
+  mutate(pooled_estimate = round(pooled_estimate, 3)) %>% 
+  mydt() 
+```
+
+### SPO2 Post-op
+
+```{r echo = F}
+bind_rows(
+  eval_basic_spo2p$pooled_auc %>% mutate(explanatory = "info"),
+  eval_basic_lda_spo2p$pooled_auc %>% mutate(explanatory = "info+LDA"),
+  eval_basic_lda_med_spo2p$pooled_auc %>% mutate(explanatory = "info+LDA+medicines"), 
+  eval_basic_lda_med_lab_any_spo2p$pooled_auc %>% mutate(explanatory = "info+LDA+medicines+labs(any)"),
+  eval_basic_lda_med_lab_ext_spo2p$pooled_auc %>% mutate(explanatory = "info+LDA+medicines+labs(ext)")) %>% 
+  select(explanatory, pooled_estimate, pooled_lower, pooled_upper) %>% 
+  mutate(pooled_estimate = round(pooled_estimate, 3)) %>% 
+  mutate(pooled_lower = round(pooled_lower, 3)) %>% 
+  mutate(pooled_estimate = round(pooled_estimate, 3)) %>% 
+  mydt() 
 ```
 
 ## Precision-recall curves and AUPRC
 
-```{r}
-pr_curves_basic %>% 
+```{r echo = F}
+eval_basic_rc$pr_curves %>% 
   mutate(explanatory = "info") %>% 
   ggplot(aes(x=recall, y=precision, group = mice_set, color = explanatory))+
   geom_path(linewidth = 0.2) +
-  geom_path(data = pr_curves_all %>% 
-  mutate(explanatory = "info+LDA", size = 0.2))
+  geom_path(data = eval_basic_lda_rc$pr_curves %>% 
+  mutate(explanatory = "info+LDA", size = 0.2))+
+  geom_path(data = eval_basic_lda_med_rc$pr_curves %>% 
+  mutate(explanatory = "info+LDA+medicines", size = 0.2))+
+  geom_path(data = eval_basic_lda_med_lab_any_rc$pr_curves %>% 
+  mutate(explanatory = "info+LDA+medicines+lab(any)", size = 0.2))+
+  geom_path(data = eval_basic_lda_med_lab_ext_rc$pr_curves %>% 
+  mutate(explanatory = "info+LDA+medicines+lab(ext)", size = 0.2))+
+  ggtitle("Respiratory complications")
+  
 ```
 
-The Pooled AUPRC is `r pooled_prauc_basic %>% round(3)` for the info and `r pooled_prauc_all %>% round(3)` for info with LDA
+```{r echo = F}
+eval_basic_death$pr_curves %>% 
+  mutate(explanatory = "info") %>% 
+  ggplot(aes(x=recall, y=precision, group = mice_set, color = explanatory))+
+  geom_path(linewidth = 0.2) +
+  geom_path(data = eval_basic_lda_death$pr_curves %>% 
+  mutate(explanatory = "info+LDA", size = 0.2))+
+  geom_path(data = eval_basic_lda_med_death$pr_curves %>% 
+  mutate(explanatory = "info+LDA+medicines", size = 0.2))+
+  geom_path(data = eval_basic_lda_med_lab_any_death$pr_curves %>% 
+  mutate(explanatory = "info+LDA+medicines+lab(any)", size = 0.2))+
+  geom_path(data = eval_basic_lda_med_lab_ext_death$pr_curves %>% 
+  mutate(explanatory = "info+LDA+medicines+lab(ext)", size = 0.2))+
+  ggtitle("Death")
+  
+```
+
+```{r echo = F}
+eval_basic_spo2$pr_curves %>% 
+  mutate(explanatory = "info") %>% 
+  ggplot(aes(x=recall, y=precision, group = mice_set, color = explanatory))+
+  geom_path(linewidth = 0.2) +
+  geom_path(data = eval_basic_lda_spo2$pr_curves %>% 
+  mutate(explanatory = "info+LDA", size = 0.2))+
+  geom_path(data = eval_basic_lda_med_spo2$pr_curves %>% 
+  mutate(explanatory = "info+LDA+medicines", size = 0.2))+
+  geom_path(data = eval_basic_lda_med_lab_any_spo2$pr_curves %>% 
+  mutate(explanatory = "info+LDA+medicines+lab(any)", size = 0.2))+
+  geom_path(data = eval_basic_lda_med_lab_ext_spo2$pr_curves %>% 
+  mutate(explanatory = "info+LDA+medicines+lab(ext)", size = 0.2))+
+  ggtitle("SPO2")
+  
+```
+
+```{r echo = F}
+eval_basic_spo2p$pr_curves %>% 
+  mutate(explanatory = "info") %>% 
+  ggplot(aes(x=recall, y=precision, group = mice_set, color = explanatory))+
+  geom_path(linewidth = 0.2) +
+  geom_path(data = eval_basic_lda_spo2p$pr_curves %>% 
+  mutate(explanatory = "info+LDA", size = 0.2))+
+  geom_path(data = eval_basic_lda_med_spo2p$pr_curves %>% 
+  mutate(explanatory = "info+LDA+medicines", size = 0.2))+
+  geom_path(data = eval_basic_lda_med_lab_any_spo2p$pr_curves %>% 
+  mutate(explanatory = "info+LDA+medicines+lab(any)", size = 0.2))+
+  geom_path(data = eval_basic_lda_med_lab_ext_spo2p$pr_curves %>% 
+  mutate(explanatory = "info+LDA+medicines+lab(ext)", size = 0.2))+
+  ggtitle("SPO2 (Post-op)")
+  
+```
+
+## Pooled AUPRC
+
+### Respiratory complications
+
+```{r}
+data.frame(
+  "explanatory" = c("basic", 
+                    "basic+lda",
+                    "basic+lda+med",
+                    "basic+lda+med+lab(any)",
+                    "basic+lda+med+labs(ext)"),
+  "AUPRC" = c(eval_basic_rc$pooled_prauc,
+              eval_basic_lda_rc$pooled_prauc,
+              eval_basic_lda_med_rc$pooled_prauc,
+              eval_basic_lda_med_lab_any_rc$pooled_prauc,
+              eval_basic_lda_med_lab_ext_rc$pooled_prauc)
+) %>% 
+  mydt()
+```
+
+### Death
+
+```{r}
+data.frame(
+  "explanatory" = c("basic", 
+                    "basic+lda",
+                    "basic+lda+med",
+                    "basic+lda+med+lab(any)",
+                    "basic+lda+med+labs(ext)"),
+  "AUPRC" = c(eval_basic_death$pooled_prauc,
+              eval_basic_lda_death$pooled_prauc,
+              eval_basic_lda_med_death$pooled_prauc,
+              eval_basic_lda_med_lab_any_death$pooled_prauc,
+              eval_basic_lda_med_lab_ext_death$pooled_prauc)
+) %>% 
+  mydt()
+```
+
+### SPO2
+
+```{r}
+data.frame(
+  "explanatory" = c("basic", 
+                    "basic+lda",
+                    "basic+lda+med",
+                    "basic+lda+med+lab(any)",
+                    "basic+lda+med+labs(ext)"),
+  "AUPRC" = c(eval_basic_spo2$pooled_prauc,
+              eval_basic_lda_spo2$pooled_prauc,
+              eval_basic_lda_med_spo2$pooled_prauc,
+              eval_basic_lda_med_lab_any_spo2$pooled_prauc,
+              eval_basic_lda_med_lab_ext_spo2$pooled_prauc)
+) %>% 
+  mydt()
+```
+
+### SPO2 (Post-op)
+
+```{r}
+data.frame(
+  "explanatory" = c("basic", 
+                    "basic+lda",
+                    "basic+lda+med",
+                    "basic+lda+med+lab(any)",
+                    "basic+lda+med+labs(ext)"),
+  "AUPRC" = c(eval_basic_spo2p$pooled_prauc,
+              eval_basic_lda_spo2p$pooled_prauc,
+              eval_basic_lda_med_spo2p$pooled_prauc,
+              eval_basic_lda_med_lab_any_spo2p$pooled_prauc,
+              eval_basic_lda_med_lab_ext_spo2p$pooled_prauc)
+) %>% 
+  mydt()
+```
 
 ## Risk tables
 
+```{r eval = T, warining=F, output=F}
+# A function to scan over threshold values tabulating TN, etc. and Youden's J statistic
+tscan = function(pred, upper_t=0.2, downsample_t = 10){
+  
+  thresholds = pred %>% 
+    distinct(prediction) %>%
+    filter(prediction <= upper_t) %>% 
+    arrange(prediction)
+  
+#  take every nth value
+
+  thresholds = thresholds %>% 
+    magrittr::extract(seq(1, nrow(thresholds), downsample_t), ) %>% 
+    pull(prediction)
+
+ # print(thresholds %>% class())
+ # print(thresholds %>% names())
+ # print(thresholds %>% length())
+  
+  # Calculate PPV for each threshold
+  out = 
+  thresholds %>% map(function(t){
+    df = pred %>% 
+      mutate(prediction_thresh = case_when(
+        prediction < t ~ 0,
+        prediction >= t ~ 1
+      )) %>% 
+      mutate(
+        TP = case_when(
+          (truth == 1) & (prediction_thresh == 1) ~ 1,
+          TRUE ~ 0
+        ),
+        FP = case_when(
+          (truth == 0) & (prediction_thresh == 1) ~ 1,
+          TRUE ~ 0
+        ),
+        TN = case_when(
+          (truth == 0) & (prediction_thresh == 0) ~ 1,
+          TRUE ~ 0
+        ),
+        FN = case_when(
+          (truth == 1) & (prediction_thresh == 0) ~ 1,
+          TRUE ~ 0
+        )
+        ,
+        thres = t
+      )
+
+    
+        
+    tp = sum(df$TP)
+    fp = sum(df$FP)
+    tn = sum(df$TN)
+    fn = sum(df$FN)   
+    
+    
+    ppv = tp/(tp+fp)
+    data.frame(
+              "t" = t,
+               "TP" = tp, 
+               "FP" = fp, 
+               "TN" = tn,
+               "FN" = fn,
+                "n" = (tp+fp+tn+fn),
+               "ppv" = ppv,
+               "fdr" = fp/(fp+tp),
+              "fpr" = fp/(fp+tn),
+              "tpr" = tp/(tp+fn),
+              "J" = tp/(tp+fn)-fp/(fp+tn),
+              "acc" = (tp+tn)/(tp+fp+tn+fn)
+               )
+  
+  }) %>% 
+    bind_rows()
+}
+
+
+#tscans_basic = 
+#  map2(pred_basic, seq(length(pred_basic)), ~ tscan(.x) %>% mutate(mice = .y))
+
+
+tscans_basic_rc = 
+  map2(pred_basic_rc, seq(length(pred_basic_rc)), ~ tscan(.x) %>% mutate(mice = .y))
+
+tscans_basic_death = 
+  map2(pred_basic_death, seq(length(pred_basic_death)), ~ tscan(.x) %>% mutate(mice = .y))
+
+tscans_basic_spo2 = 
+  map2(pred_basic_rc, seq(length(pred_basic_spo2)), ~ tscan(.x) %>% mutate(mice = .y))
+
+tscans_basic_spo2p = 
+  map2(pred_basic_rc, seq(length(pred_basic_spo2p)), ~ tscan(.x) %>% mutate(mice = .y))
+
+#tscans_basic %>% 
+#  bind_rows() %>% 
+#  mutate(mice = factor(mice)) %>% 
+#  ggplot(aes(x=t, y=J, color = mice))+
+#  geom_line()
+```
+
+Optimal threshold for confusion matrix calculated as via optimizing Youden's J statistic:
+
+```{r eval=T, warining=F, output=F}
+opt_threshold = function(scan){
+  map(scan, function(ts){
+    ts %>% arrange(desc(J)) %>% magrittr::extract2(1, "t")
+    }) %>% 
+  as.numeric() %>% 
+  mean()
+}
+
+
+opt1_basic_rc = opt_threshold(tscans_basic_rc)
+opt1_basic_death = opt_threshold(tscans_basic_death)
+opt1_basic_spo2 = opt_threshold(tscans_basic_spo2)
+opt1_basic_spo2p = opt_threshold(tscans_basic_spo2p)
+
+
+
+```
+
+A function for composing risk tables:
+
 ```{r}
+# A function to compose a risk table 
+
+
 # Prognos function for automatic table generation ---------------------------------------
 prognos <- function(.data, estimate, truth){
   .estimate = sym(estimate)
@@ -578,11 +1291,14 @@ prognos <- function(.data, estimate, truth){
 }
 
 
+
 # Rule out table ---------------------------------------------------------
 ## These tables could be combined
 ## Set cut-offs
 
-tbl_ruleout_basic = pred_basic %>% 
+rtbl = function(predictions, opt_threshold){
+  
+  tbl = predictions %>% 
   map(~ mutate(., subjid = seq(nrow(.)))) %>% 
   bind_rows() %>% 
   group_by(subjid) %>% 
@@ -618,8 +1334,8 @@ tbl_ruleout_basic = pred_basic %>%
       TRUE ~ NA_real_) %>%
       factor(),
     cutoff7 = case_when(
-      estimate <= 0.05 ~ 0,
-      estimate > 0.05 ~ 1,
+      estimate <= opt_threshold ~ 0,
+      estimate > opt_threshold ~ 1,
       TRUE ~ NA_real_) %>%
       factor()#,
 #    cutoff8 = case_when(
@@ -647,17 +1363,59 @@ map_df(list(
   "<=0.02" = "cutoff4",
   "<=0.03" = "cutoff5",
   "<=0.04" = "cutoff6",
-  "<=0.05" = "cutoff7"#,
+  "<= opt" = "cutoff7"#,
 #  "<=8" = "cutoff8",
 #  "<=9" = "cutoff9",
 #  "<=10" = "cutoff10"
 ),
-~ prognos(tbl_ruleout_basic, .x, "truth"), .id= "threshold") #%>%
+~ prognos(tbl, .x, "truth"), .id= "threshold") #%>%
 #  mytable(caption = "Sensitivity, specificity, postitive predicive value and negative predictive value for Isaric score cut-offs for mortality")
+}
+
 
 
 
 ```
 
+Scan over thresholds to maximize Youden's J statistic:
 
+```{r eval=T, warining=F, output=F}
+
+
+
+# Rule out table ---------------------------------------------------------
+## These tables could be combined
+## Set cut-offs
+
+tbl_ruleout_basic_rc = rtbl(pred_basic_rc, opt1_basic_rc)
+tbl_ruleout_basic_death = rtbl(pred_basic_death, opt1_basic_death)
+tbl_ruleout_basic_spo2 = rtbl(pred_basic_spo2, opt1_basic_spo2)
+#tbl_ruleout_basic_spo2p = rtbl(pred_basic_spo2p, opt1_basic_spo2p)
+
+```
+
+### Risk tables
+
+All risk tables shown are based on basic patient information models. Note that a range of threshold values are shown as well as a optimal threshold calculated as via optimizing Youden's J statistic:
+
+### Respiratory complications
+
+```{r echo=FALSE}
+tbl_ruleout_basic_rc %>% 
+  mydt()
+```
+
+#### Death
+
+```{r echo=FALSE}
+tbl_ruleout_basic_death %>% 
+  mydt()
+```
+
+#### SPO2
+
+```{r echo=FALSE}
+tbl_ruleout_basic_spo2 %>% 
+  mydt()
+```
 
