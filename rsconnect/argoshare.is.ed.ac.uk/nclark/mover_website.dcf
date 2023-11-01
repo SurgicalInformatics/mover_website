@@ -4,9 +4,9 @@ username: nclark
 account: nclark
 server: argoshare.is.ed.ac.uk
 hostUrl: https://argoshare.is.ed.ac.uk/__api__
-appId: 645
-bundleId: 3301
-url: https://argoshare.is.ed.ac.uk/content/60b8350e-38d8-42fd-9b84-8b1ee75657e9/
+appId: 635
+bundleId: 3428
+url: https://argoshare.is.ed.ac.uk/mover_dd/
 version: 1
 asMultiple: FALSE
 asStatic: TRUE

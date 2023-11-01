@@ -3,7 +3,7 @@ title: "Logistic regression baseline model of respiratory complications"
 format: html
 editor: visual
 execute:
-  freeze: auto
+  freeze: true
 ---
 
 ```{r output=F, warning=F}
@@ -20,10 +20,6 @@ theme_set(theme_bw())
 #source("01_read_clean.R")
 #source("../repos/mover_website/functions.R")
 source("functions.R")
-
-
-
-
 
 ```
 
@@ -102,7 +98,7 @@ dependent = "respiratory_comp"
 
 # Basic patient information
 basic_features = c(
-  "icu_admin_flag",
+  #"icu_admin_flag",
   "age",
   "height_cm",
   "weight",
@@ -157,10 +153,19 @@ independent_basic_lda_med_lab_ext = c(basic_features, lda_features, med_features
 
 ```
 
-Summary table:
+Summary table, by respiratory complications:
 
 ```{r}
 data_train %>% summary_factorlist(dependent = dependent, explanatory = independent_basic_lda_med) %>% 
+  mydt()
+```
+
+Summary of basic information by death:
+
+```{r}
+data_train %>% summary_factorlist(dependent = "death", 
+                                  explanatory = independent_basic,
+                                  p=TRUE) %>% 
   mydt()
 ```
 
